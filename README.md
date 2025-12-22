@@ -1,6 +1,6 @@
 TheExttendについて
 TheExtendは、M5StackCore2（ESP32）と自作キーボード(QMKFirmware/RP2040Zero)及びPCを接続して使用する拡張基板及び自作のアプリケーションです。
-基本構成として自作キーボードとI2C通信を行うStructure_1とPCを介してUSBシリアル及びRawHIDを使用するStructure_2があります。
+/基本構成として自作キーボードとI2C通信を行うStructure_1とPCを介してUSBシリアル及びRawHIDを使用するStructure_2があります。
 Structure_2ではPCのローカル環境に専用アプリtypingbridge.pyをインストールすることで、キーボードの入力情報をM5Core2へ送信しています。
 
 <img width="1039" height="582" alt="image" src="https://github.com/user-attachments/assets/a4b155ae-c753-415b-9e8e-1a116905916d" />
