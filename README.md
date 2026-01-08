@@ -1,4 +1,4 @@
-*TheExtendについて*<br>
+#**TheExtendについて**<br>
 
 TheExtendは、M5StackCore2（ESP32）と自作キーボード(QMKFirmware/RP2040Zero)及びPCを接続して使用する拡張基板及び自作のアプリケーションです。<br>
 
