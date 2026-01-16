@@ -1,11 +1,16 @@
-# TheExtendについて<br>
+# TypingMeterについて<br>
 <img width="930" height="526" alt="TheExtend" src="https://github.com/user-attachments/assets/bad5d9ba-cbc2-4483-b99f-740de1381e60" />
 
 
-TheExtendは、M5StackCore2（ESP32）と自作キーボード(QMKFirmware/RP2040Zero)及びPCを接続して使用する拡張基板及び自作のアプリケーションです。<br>
+TypingMeterは、PCと接続されたキーボードのタイピング速度や文字数を計測するアプリケーションです。<br>
+    タイピング速度をスピードメーターのように表示<br>
+    平均値や最大値をLOGとして可視化<br>
+    ガソリンメーターを模したポモドーロタイマー機能<br>
+    Night Drivingのアニメーションが見られるスクリーンセーバー機能<br>
+    その他システムカラーの変更やバイブレーションのOn/off<br>
 
-基本構成として自作キーボードとI2C通信を行うStructure_1とPCを介してUSBシリアル及びRawHIDを使用するStructure_2があります。<br>
 
+基本構成として自作キーボードとI2C通信を行うStructure_1とPCを介してUSBシリアル/Bluetooth及びRawHIDを使用するStructure_2があります。<br>
 Structure_2ではPCのローカル環境に専用アプリtypingbridge.pyをインストールすることで、キーボードの入力情報をM5Core2へ送信しています。
 
 <img width="1039" height="582" alt="image" src="https://github.com/user-attachments/assets/a4b155ae-c753-415b-9e8e-1a116905916d" />
