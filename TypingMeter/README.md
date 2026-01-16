@@ -1,5 +1,6 @@
 # TypingMeterについて<br>
-<img width="930" height="526" alt="TheExtend" src="https://github.com/user-attachments/assets/bad5d9ba-cbc2-4483-b99f-740de1381e60" />
+<img width="1280" height="670" alt="image" src="https://github.com/user-attachments/assets/06a9aac7-6331-4f61-9088-c659603a23d9" />
+
 
 
 TypingMeterは、PCと接続されたキーボードのタイピング速度や文字数を計測するアプリケーションです。<br>
