@@ -13,8 +13,11 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
 - **その他システムカラーの変更やバイブレーションのOn/off**<br>
 
 
-基本構成として自作キーボードとI2C通信を行うStructure_1とPCを介してUSBシリアル/Bluetooth及びRawHIDを使用するStructure_2があります。<br>
-Structure_2ではPCのローカル環境に専用アプリtypingbridge.pyをインストールすることで、キーボードの入力情報をM5Core2へ送信しています。
+**<基本構成>**
+基本構成として自作キーボードTheEndpoint(QMKFirmware・マイコン/RP2040)とI2C通信を行う**[Structure_1]**とPCを介してUSBシリアル/Bluetooth及びRawHIDを使用する[Structure_2]があります。<br>
+Structure_2ではPCのローカル環境に専用アプリ””typingbridge.py**をインストールすることで、キーボードの入力情報をM5Core2へ送信します。
+
+
 
 <img width="1039" height="582" alt="image" src="https://github.com/user-attachments/assets/a4b155ae-c753-415b-9e8e-1a116905916d" />
 <img width="928" height="525" alt="image" src="https://github.com/user-attachments/assets/7ee7e73e-b908-4569-80b4-2992e57cb948" />
