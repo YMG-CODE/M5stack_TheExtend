@@ -13,7 +13,7 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
 - **その他システムカラーの変更やバイブレーションのOn/off**<br>
 
 
-**<基本構成>**<br>
+**<基本構成>**
 - **[Structure_1]**:自作キーボード[TheEndpoint](https://booth.pm/ja/items/5397024?srsltid=AfmBOopyI2rIjd3S4u9huHNX6b24YG9W6Mf1bb4Djlk5SMYoJj527o7B)(QMKFirmware・マイコン/RP2040)とと拡張基板TheExtendを介して、M5Core2とI2C通信で接続する<br>
 - **[Structure_2]**:USBシリアル/Bluetooth及びRawHIDを使用し直接PCと接続し、M5Core2をスタンドアロンで活用する<br>
 
@@ -21,3 +21,7 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
 
 <img width="1039" height="582" alt="image" src="https://github.com/user-attachments/assets/a4b155ae-c753-415b-9e8e-1a116905916d" />
 <img width="928" height="525" alt="image" src="https://github.com/user-attachments/assets/7ee7e73e-b908-4569-80b4-2992e57cb948" />
+
+**<操作方法>**
+- 起動後にモード選択
+- - xxxx
