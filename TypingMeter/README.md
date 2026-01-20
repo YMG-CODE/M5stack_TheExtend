@@ -23,5 +23,13 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
 <img width="928" height="525" alt="image" src="https://github.com/user-attachments/assets/7ee7e73e-b908-4569-80b4-2992e57cb948" />
 
 **<操作方法>**
-- 起動後にモード選択
-- - xxxx
+- 起動後に接続モード選択(画面下部のABCボタンで選択)
+
+    - A:USB/BTを使用する場合はtypingbridge.pyの以下ドキュメントをご確認下さい。
+- ボタン説明
+    - Aボタン
+        - 短押し:meterColorの変更
+        - 長押し:バイブレーションOn/Off切り替え
+    - Aボタン
+        - 短押し:meterColorの変更
+        - 長押し:バイブレーションOn/Off切り替え
