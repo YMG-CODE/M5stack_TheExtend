@@ -24,12 +24,16 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
 
 **<操作方法>**
 - 起動後に接続モード選択(画面下部のABCボタンで選択)
-
     - A:USB/BTを使用する場合はtypingbridge.pyの以下ドキュメントをご確認下さい。
 - ボタン説明
     - Aボタン
         - 短押し:meterColorの変更
         - 長押し:バイブレーションOn/Off切り替え
-    - Aボタン
+    - Bボタン
         - 短押し:meterColorの変更
-        - 長押し:バイブレーションOn/Off切り替え
+        - 長押し:pomodoroタイマー 45mim/25mim/demo mode/Offの切り替え 
+    - Cボタン
+        - 短押し:Log画面とmeter画面の切り替え
+        - 長押し:Logのリセット(MaxCPM、Totalタイピング数、起動時間)
+    - 画面タップ
+        - 長押し:スクリーンセーバーのOn/Off切り替え
