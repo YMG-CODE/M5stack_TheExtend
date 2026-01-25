@@ -34,8 +34,9 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
         - 長押し:pomodoroタイマー 45mim/25mim/demo mode/Offの切り替え 
     - **Cボタン**
         - 短押し:Log画面とmeter画面の切り替え・表示時点のLog情報の保存※
-        - 長押し:Logのリセット(MaxCPM、TotalKS、UPtime)
-        - AvgCPMは起動時にリセットされます。
-        - Log情報はCボタンを押す意外に、
+        - 長押し:Logのリセット(MaxCPM、TotalKS、UPtimeを0にします)
+        - ※AvgCPMは起動時にリセットされます。
+        - ※Log情報はCボタンを押す意外に、1時間の定期保存、
+        バッテリー容量が15%を切った場合の自動保存が実行されます。
     - **画面タップ**
         - 長押し:スクリーンセーバーのOn/Off切り替え
