@@ -22,6 +22,9 @@ TypingMeterは、PCと接続されたキーボードのタイピング速度や�
 <img width="1039" height="582" alt="image" src="https://github.com/user-attachments/assets/a4b155ae-c753-415b-9e8e-1a116905916d" />
 <img width="928" height="525" alt="image" src="https://github.com/user-attachments/assets/7ee7e73e-b908-4569-80b4-2992e57cb948" />
 
+<img width="582" height="537" alt="image" src="https://github.com/user-attachments/assets/4dc72520-a498-47da-9b99-a52df55805c4" />
+
+
 **<操作方法>**
 - 起動後に接続モード選択(画面下部のABCボタンで選択)
     - A:USB/BTを使用する場合はtypingbridge.pyの以下ドキュメントをご確認下さい。
