@@ -39,7 +39,8 @@ Solenoidemulaterは、PCと接続されたキーボードのタイピングに�
     - 音程を変更します。
   - **Volume**
     - 音量を変更します(デバイスのスピーカー保護のため80%でリミッターをかけています)。<br><br>
-<img width="475" height="454" alt="image" src="https://github.com/user-attachments/assets/14d7f439-c03f-4847-9b02-732f448b5dec" /><br>
+<img width="497" height="458" alt="image" src="https://github.com/user-attachments/assets/82bbb47d-9e87-45c6-a485-f58d47b9a225" />
+
 <img width="476" height="463" alt="image" src="https://github.com/user-attachments/assets/53da7ece-9037-42f0-ab4f-b621194e3a4c" />
 
 
