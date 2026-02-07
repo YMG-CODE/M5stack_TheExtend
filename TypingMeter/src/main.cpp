@@ -4,15 +4,42 @@
 #include <math.h>
 #include <Preferences.h>
 
-// ★ 追加
 #include <BluetoothSerial.h>
 // ==== USB/BT Connection Flags ====
 bool btConnected = false;   // セントラルがいれば true
 bool usbActive   = false;   // 今フレームで USB Serial に何か来たら true
-unsigned long lastCPMTime = 0;  // ← これだけでOK
+unsigned long lastCPMTime = 0;  
 
 Preferences prefs;
 BluetoothSerial SerialBT;
+//Core2 起動時に自動接続
+void sendDeviceId() {
+  uint8_t pkt[6] = {
+    0x7F,  // magic
+    0x01,  // DEVICE_ID
+    0x01,  // protocol ver
+    0x01,  // Core2
+    0x07,  // features
+    0x00
+  };
+  Serial.write(pkt, sizeof(pkt));
+}
+
+void processHello() {
+    if (Serial.available() >= 2) {
+        uint8_t a = Serial.peek();
+        if (a == 0xF0) {
+            Serial.read(); // consume
+            uint8_t b = Serial.read();
+            if (b == 0x00) {
+                sendDeviceId();
+            }
+        }
+    }
+}
+
+bool deviceIdSent = false;
+
 
 // ==== 通信ソース種別 ====
 enum CommSource : uint8_t {
@@ -63,12 +90,25 @@ int sampleCount = 0;
 uint16_t maxCPM = 0;
 uint64_t totalKeystrokes = 0;
 unsigned long startTime;
+int historyCount = 0;   // ★ 実際に溜まったサンプル数
+static unsigned long lastKSUpdateMs = 0;
 
-// ==== 永続化 ====
+// ==== Current CPM ====
+static uint16_t currentCPM = 0;
+// ==== Global 1-second tick ====
+static unsigned long lastTickMs = 0;
+static uint32_t totalSec = 0;   // ← TotalSec はこれだけで管理
+
+int chooseTimeStep(int totalSec) {
+    if (totalSec <= 600)  return 60;
+    if (totalSec <= 3600) return 300;
+    return 600;
+}
+
 unsigned long lastGraphUpdate = 0;
 unsigned long lastSaveTime = 0;
-constexpr unsigned long SAVE_INTERVAL = 5000; // 5秒ごと保存
-const unsigned long GRAPH_UPDATE_INTERVAL = 1000; // 更新間隔 (ms)
+constexpr unsigned long SAVE_INTERVAL = 6000000; // 1時間ごと保存
+const unsigned long GRAPH_UPDATE_INTERVAL = 1000; // 更新間隔 (ms)ｗ
 
 #define REPLAY_BLOCK_DURATION 600000  // 10分単位（ミリ秒）
 #define REPLAY_SPEED 10000               // 再生速度（ms/frame）
@@ -77,6 +117,13 @@ unsigned long replayStartTime = 0;
 int replayFrameIndex = 0;
 uint32_t sumCPM = 0;
 uint32_t countCPM = 0;
+// ===== 今回平均（起動単位）=====
+uint32_t sessionSumCPM   = 0;
+uint32_t sessionCountCPM = 0;
+
+// ===== 前回平均（LOGMODE確定値）=====
+uint16_t lastSessionAvgCPM   = 0;   // 表示・保存用
+
 
 // ==== ログ画面グラフ棒調整 ====
 const int GRAPH_X = 20;
@@ -86,14 +133,28 @@ const int GRAPH_HEIGHT = 70;
 const int MOVING_AVG_WINDOW = 60;   // 移動平均のサンプル数（直近60サンプル）
 int cpmGraph[GRAPH_WIDTH];  // 表示用リングバッファ
 int logAvgCPM = 0;   // LOGモード開始時点の固定平均
+int cnt60s = 0;
+
+constexpr int CPM_LOG_SIZE = 3600;   // 最大1時間（1秒単位）
+int cpmLog[CPM_LOG_SIZE];
+int cpmLogIndex = 0;
+int cpmLogCount = 0;
+
+
+
+// ==== 起動時刻（LOG用）====
+unsigned long bootTimeMs = 0;
 
 // ==== フェード用 ====
 uint8_t avgFadeAlpha = 0;  // 平均線フェード用
 unsigned long lastFadeUpdate = 0;
 
+
 // ==== 表示モード ====
-enum DisplayMode { MODE_METER, MODE_LOG };
+enum DisplayMode { MODE_METER, MODE_LOG, MODE_PCSTAT };
+
 DisplayMode displayMode = MODE_METER;
+DisplayMode prevDisplayMode = MODE_METER;
 
 // ==== ユーティリティ ====
 inline int valueToAngle(int value) {
@@ -143,6 +204,7 @@ int pomoCycle = 0;
 bool screenSaverActive = false;
 unsigned long lastActivityTime = 0;
 const unsigned long SCREENSAVER_TIMEOUT = 3000; // 30秒無操作で開始
+static bool needleWasMoving = false;
 
 // 背景スクロール関連
 int roadOffset = 0;
@@ -162,6 +224,47 @@ volatile bool btnC_pressed = false;
 // ==== 設定系 ====
 bool vibrationEnabled = true;  // デフォルト ON
 Preferences prefsVibe;  // ← バイブ専用
+
+// ==== Battery status ====
+uint8_t batteryPct   = 0;
+float   batteryVolt  = 0.0f;
+bool    batteryChg   = false;
+uint32_t lastBattMs  = 0;
+const uint32_t BATT_UPDATE_MS = 2000;  // 2秒に1回
+static int  lastBatteryPct = -1;
+static bool lastBatteryChg = false;
+static bool batteryDirty   = true;  // 初回描画用
+
+// ==== PC Status (from Typingbridge) ====
+uint8_t pc_cpu   = 0;
+uint8_t pc_ram   = 0;
+uint8_t pc_disk  = 0;
+uint8_t pc_disk_r_level = 0;
+uint8_t pc_disk_W_level= 0;
+// 差分描画用
+uint8_t last_cpu = 255;
+uint8_t last_ram = 255;
+uint8_t last_disk = 255;
+uint8_t last_disk_r = 255;
+uint8_t last_disk_w = 255;
+
+// 差分描画用（描画値）
+int last_cpu_anim  = -1;
+int last_ram_anim  = -1;
+int last_disk_anim = -1;
+int last_disk_r_anim = -1;
+int last_disk_w_anim = -1;
+
+static uint8_t lastCmd = 0;
+float pc_disk_r_mbps = 0.0f;
+float pc_disk_w_mbps = 0.0f;
+static float last_disk_r_mbps = -1.0f;
+static float last_disk_w_mbps = -1.0f;
+
+// ==== DEMO 用ダミー生成 ====
+unsigned long lastDemoTick = 0;
+int demoPhase = 0;
+
 
 // ==== バイブレーション関数（ON時のみ動作） ====
 void pulseVibration(int level = 150, int duration = 200) {
@@ -293,11 +396,6 @@ for (int i = 0; i <= 5; i++) {
 }
 }
 
-
-
-
-
-
 // ====統計数値の桁切り====
 String formatWithK(uint64_t num) {
     if (num >= 1000000) return String((float)num / 1000000.0, 2) + "M";
@@ -305,44 +403,13 @@ String formatWithK(uint64_t num) {
     return String(num);
 }
 
-// ==== 統計更新 + decay処理 ====  
-void updateStats(int cpm) {
-    static unsigned long lastUpdate = millis();
-    static int lastCPM = 0;           // 最後の打鍵値保持
-    static unsigned long lastKeystroke = 0; // 最後の打鍵時刻
 
-    unsigned long now = millis();
-    float elapsedMin = (now - lastUpdate) / 60000.0;  // 経過分数
-    lastUpdate = now;
-
-    // ==== decay保持処理 ====
-    if (cpm > 0) {
-        lastCPM = cpm;
-        lastKeystroke = now;
-    } else {
-        // 打鍵停止後5秒間は前の値を保持
-        if (now - lastKeystroke <= 5000) {
-            cpm = lastCPM;
-        } else {
-            lastCPM = 0; // decay完了
-        }
-    }
-
-    // ==== 統計更新 ====
-    totalKeystrokes += (uint64_t)(cpm * elapsedMin) / 2;  // CPM → 打鍵数換算
-    if (cpm > maxCPM) maxCPM = cpm;
-    sumValue += cpm;
-    sampleCount++;
-
-    // 履歴に保存（常に最新が右端にくる）
+//履歴書き込み関数
+void pushCPMHistory(int cpm) {
     cpmHistory[historyIndex] = cpm;
     historyIndex = (historyIndex + 1) % 300;
 
-    // === 各Modeで記録 ===
-        for (int i = 0; i < GRAPH_WIDTH - 1; i++) {
-            cpmGraph[i] = cpmGraph[i + 1];
-        }
-        cpmGraph[GRAPH_WIDTH - 1] = cpm;
+        historyCount++;
 }
 
 // ==== CPM / Layer 共通適用ヘルパ ====
@@ -355,6 +422,13 @@ void applyCPM(uint16_t cpm) {
     // メインメーター更新
     targetValue = cpm;
     lastActivityTime = millis();
+    currentCPM = cpm;
+
+    if (cpm == 0) return;   // 0CPMは除外
+
+    // --- 今日平均（起動セッション） ---
+    sessionSumCPM += cpm;
+    sessionCountCPM++;
 
     // USB/BT の通信時刻更新（針戻し用）
     if (appMode == MODE_USB_BT) {
@@ -366,9 +440,6 @@ void applyCPM(uint16_t cpm) {
         // 平均CPM用の積算（0 は除外）
         sumCPM += cpm;
         countCPM++;
-
-        // KS（キーストローク）集計
-        totalKeystrokes += (cpm / 60);
     }
 
     // ==== 最大CPM更新 ====
@@ -376,11 +447,246 @@ void applyCPM(uint16_t cpm) {
         maxCPM = cpm;
     }
 
-    // ==== グラフ/リプレイ用ヒストリ ====
-    cpmHistory[historyIndex] = cpm;
-    historyIndex = (historyIndex + 1) % 300;
+    // ★ 1秒に1回だけ処理する
+    unsigned long now = millis();
+        if (now - lastKSUpdateMs >= 1000) {
+            lastKSUpdateMs += 1000;
+            // CPM → 打鍵数（その秒）
+            uint16_t keysThisSecond = cpm / 60;
+            totalKeystrokes += keysThisSecond;
+            //pushCPMHistory(cpm); // ==== CPM履歴追加（★ここだけ）====
+        }
 }
 
+//PCStatus 適用関数（共通）
+void applyPCStatus(uint8_t cmd, uint8_t v) {
+    switch (cmd) {
+        case 0x20: pc_cpu = v; break;
+        case 0x21: pc_ram = v; break;
+        case 0x22: pc_disk = v; break;
+        case 0x23: pc_disk_r_level = (v < 5) ? v : 5; break;
+        case 0x24: pc_disk_W_level = (v < 5) ? v : 5; break;
+                // ★ MB/s 実値（0.1MB/s 単位）
+        case 0x25: pc_disk_r_mbps = v / 10.0f; break;
+        case 0x26: pc_disk_w_mbps = v / 10.0f; break;
+    }
+}
+
+
+// ==== 起動してからの生涯平均CPM ====
+// ==== 実打鍵の平均CPM（0を除外） ====
+int getSessionAverageCPM() {
+    return (sessionCountCPM > 0)
+        ? (sessionSumCPM / sessionCountCPM)
+        : 0;
+}
+
+
+// cpmGraph[] の中で 0 でない値だけ平均化する
+int getMovingAverageCPM() {
+return (countCPM > 0) ? (sumCPM / countCPM) : 0;
+}
+
+void onSecondTick() {
+    totalSec++;
+
+    // 打鍵数
+    totalKeystrokes += currentCPM / 60;
+
+    // === 直近用（300秒）===
+    pushCPMHistory(currentCPM);
+
+    // === 全履歴用（最大3600秒）===
+    cpmLog[cpmLogIndex] = currentCPM;
+    cpmLogIndex = (cpmLogIndex + 1) % CPM_LOG_SIZE;
+    if (cpmLogCount < CPM_LOG_SIZE) cpmLogCount++;
+}
+
+
+void drawXAxisLabels(
+    int baseX, int baseY,
+    int graphW, int graphH,
+    int totalSecLog
+) {
+    const int MARGIN_LEFT = 30;
+    int graphStartX = baseX + MARGIN_LEFT;
+    int graphWpx = graphW - MARGIN_LEFT;
+
+    int stepSec = chooseTimeStep(totalSecLog);
+
+    M5.Display.setTextSize(1);
+
+    for (int sec = 0; sec <= totalSecLog; sec += stepSec) {
+
+        int x = graphStartX +
+            (int)((float)sec / totalSecLog * graphWpx);
+
+        // ===== ★ 見た目調整はここから =====
+
+        // ===== 色指定 =====
+        if (sec == totalSecLog) {
+            // ★ 最新値（右端）だけ強調
+            M5.Display.setTextColor(TFT_WHITE, BLACK);
+        } else {
+            // 左端＆中間は控えめ
+            M5.Display.setTextColor(TFT_DARKGREY, BLACK);
+        }
+
+        // 目盛り線
+        M5.Display.drawLine(x, baseY, x, baseY + 4, TFT_DARKGREY);
+
+        // ラベル文字
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d:%02d", sec / 60, sec % 60);
+
+        int textX = x - 8;
+
+        // ★ はみ出し防止（ここ）
+        textX = constrain(
+            textX,
+            baseX + 2,
+            baseX + graphW - 22
+        );
+
+        int textY = baseY + 6;
+        M5.Display.setCursor(textX, textY);
+        M5.Display.print(buf);
+    }
+}
+
+
+
+void drawCompressedLogGraph(
+    int baseX, int baseY, int graphW, int graphH
+) {
+    const int MARGIN_LEFT = 30;
+    int graphStartX = baseX + MARGIN_LEFT;
+    int graphWpx = graphW - MARGIN_LEFT;
+
+    int localMax = 0;
+    for (int i = 0; i < cpmLogCount; i++) {
+        localMax = max(localMax, cpmLog[i]);
+    }
+
+    int valueRangeMax = max(1000, (localMax / 200 + 1) * 200);
+
+
+    if (cpmLogCount < 2) return;
+
+    // ==== 全履歴秒数 ====
+    int totalSecLog = cpmLogCount;
+
+    // ==== 1px あたり何秒か ====
+    float secPerPx = (float)totalSecLog / graphWpx;
+
+    // ==== 背景 ====
+    M5.Display.fillRect(
+        baseX, baseY - graphH,
+        graphW, graphH,
+        BLACK
+    );
+
+    // ==== Y軸 ====
+    M5.Display.drawLine(
+        graphStartX, baseY - graphH,
+        graphStartX, baseY,
+        TFT_DARKGREY
+    );
+
+    // ==== 圧縮描画（最大値方式）====
+    int prevY = -1;
+
+    for (int px = 0; px < graphWpx; px++) {
+
+        int startSec = (int)(px * secPerPx);
+        int endSec   = (int)((px + 1) * secPerPx);
+        if (endSec <= startSec) endSec = startSec + 1;
+
+        int maxVal = 0;
+        for (int s = startSec; s < endSec; s++) {
+            int idx = (cpmLogIndex - cpmLogCount + s + CPM_LOG_SIZE) % CPM_LOG_SIZE;
+            maxVal = max(maxVal, cpmLog[idx]);
+        }
+
+        int y = baseY - map(maxVal, 0, valueRangeMax, 0, graphH);
+        int x = graphStartX + px;
+
+        // ★ 折れ線化
+        if (prevY >= 0) {
+            M5.Display.drawLine(x - 1, prevY, x, y, getCPMColor(maxVal));
+        } else {
+            M5.Display.drawPixel(x, y, getCPMColor(maxVal));
+        }
+
+        prevY = y;
+    }
+
+    // ==== Y軸目盛り ====
+    int step = valueRangeMax / 5;
+    for (int v = 0; v <= valueRangeMax; v += step) {
+
+        int y = baseY - map(v, 0, valueRangeMax, 0, graphH);
+
+        // 目盛り線
+        M5.Display.drawLine(
+            graphStartX - 3, y,
+            graphStartX, y,
+            TFT_DARKGREY
+        );
+
+        // 数値ラベル
+        M5.Display.setTextSize(1);
+        M5.Display.setTextColor(TFT_DARKGREY, BLACK);
+        M5.Display.setCursor(baseX + 2, y - 3);
+        M5.Display.printf("%d", v);
+    }
+
+    drawXAxisLabels(
+    baseX,
+    baseY,
+    graphW,
+    graphH,
+    totalSecLog
+    );
+
+
+    // ==== 平均線 ====
+    int avg = getMovingAverageCPM();
+    int avgY = baseY - map(avg, 0, valueRangeMax, 0, graphH);
+    for (int x = graphStartX; x < baseX + graphW; x += 4) {
+        M5.Display.drawPixel(x, avgY, TFT_YELLOW);
+    }
+    
+    // ==== 平均ラベル（必ず最後）====
+    int graphEndX   = baseX + graphW - 1;
+    int avgCPM = getMovingAverageCPM();  // リアルタイム平均（直近60サンプル）
+    int labelW = 60;
+    int labelH = 14;
+    int labelX = graphEndX - labelW - 4;
+
+    // グラフ外にはみ出さないよう制限
+    int labelY = constrain(
+        avgY - labelH / 2,
+        baseY - graphH + 4,
+        baseY - labelH - 2
+    );
+
+    // 背景
+    M5.Display.fillRoundRect(
+        labelX,
+        labelY,
+        labelW,
+        labelH,
+        4,
+        BLACK
+    );
+
+    // テキスト
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_YELLOW, BLACK);
+    M5.Display.setCursor(labelX + 8, labelY + 3);
+    M5.Display.printf("Avg:%d", avgCPM);
+}
 
 
 void updateGraphHistory(int cpm) {
@@ -419,25 +725,68 @@ void updateGraphHistory(int cpm) {
     }
 }
 
-// ==== 起動してからの生涯平均CPM ====
-// ==== 実打鍵の平均CPM（0を除外） ====
-// cpmGraph[] の中で 0 でない値だけ平均化する
-int getMovingAverageCPM() {
-return (countCPM > 0) ? (sumCPM / countCPM) : 0;
+// ==== 保存関数 ====
+void saveStats() {
+    static uint64_t lastKS = 0;
+    static uint16_t lastMaxCPM = 0;
+    
+
+    if (totalKeystrokes == lastKS &&
+        maxCPM == lastMaxCPM) return;
+
+    prefs.putULong64("totalKeystrokes", totalKeystrokes);
+    prefs.putUInt("maxCPM", maxCPM);
+
+    lastKS = totalKeystrokes;
+    lastMaxCPM = maxCPM;
+}
+
+struct LogSnapshot {
+    uint32_t totalSec;
+    uint32_t totalKS;
+    uint16_t maxCPM;
+    uint16_t lastAvgCPM;  
+};
+
+void saveLogSnapshot() {
+
+    int sessionAvg = getSessionAverageCPM();
+
+    // ★ 平均0なら保存しない（前回平均を壊さない）
+    if (sessionAvg <= 0 || sessionCountCPM < 10) {
+        return;
+    }
+
+    LogSnapshot s {
+        totalSec,
+        (uint32_t)totalKeystrokes,
+        maxCPM,
+        (uint16_t)sessionAvg   // ← 前回平均として確定
+    };
+
+    prefs.putBytes("logSnap", &s, sizeof(s));
 }
 
 
 // ==== ログ画面 ====
 void drawLogScreen() {
+    // ★ LOGを開いた瞬間を記録点にする
+    saveLogSnapshot();
+    
     M5.Display.fillScreen(BLACK);
      // ==== LOGモードの平均値を確定 ====
     logAvgCPM = getMovingAverageCPM();  // ←新しく作る関数
 
+    int x = GRAPH_X;
+    int w2 = GRAPH_WIDTH * 0.4;
+    int w1 = GRAPH_WIDTH * 0.3;
+    int w0 = GRAPH_WIDTH - w2 - w1;
+
     // タイトルバー
     M5.Display.setTextDatum(MC_DATUM);
-    M5.Display.setTextColor(TFT_CYAN);
-    M5.Display.setTextSize(3);
-    M5.Display.drawString("LOG MODE", 160, 20);
+    M5.Display.setTextColor(meterColor);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("LOG MODE", 240, 20);
     M5.Display.drawLine(10, 40, 310, 40, TFT_DARKGREY);
 
     // === 統計情報 ===
@@ -448,7 +797,11 @@ void drawLogScreen() {
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(TFT_YELLOW);
     M5.Display.setCursor(15, 47); 
-    M5.Display.printf("AvgCPM: %d", avgCPM);
+    //M5.Display.printf("AvgCPM: %d", avgCPM);
+    M5.Display.printf("Avg: %d", getSessionAverageCPM());
+    M5.Display.setTextColor(TFT_GREENYELLOW);
+     M5.Display.setCursor(135, 47); 
+    M5.Display.printf("Avg Last: %d", lastSessionAvgCPM);
 
     M5.Display.setTextColor(TFT_RED);
     M5.Display.setCursor(15, 72); 
@@ -466,25 +819,32 @@ void drawLogScreen() {
     isReplaying = true;
     replayStartTime = millis();
     replayFrameIndex = 0;
+
+    drawCompressedLogGraph(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT);
+    isReplaying = false; // アニメは使わない
+
 }
 
-// ==== グラフ描画（リプレイ再生アニメーション＋時間スケール対応＋余白調整） ====
+// ==== グラフ描画（高速リプレイ再生・時間スケール一致版） ====
 void drawReplayFrameAnimated(int baseX, int baseY, int graphW, int graphH) {
     static unsigned long lastFrameTime = 0;
     static bool initialized = false;
-    const int frameInterval = 80;       // フレーム間隔（ms）
-    const int valueRangeMax = max(1000, (maxCPM / 200 + 1) * 200);  // 動的スケール
-    const int SAMPLE_INTERVAL_MS = 2000; // サンプリング間隔（例: 2秒）
-    const int TIME_STEP_SEC = 10;       // X軸ラベル間隔（秒）
-    const int MARGIN_LEFT = 30;         // 左の余白（ラベル分）
 
-// ==== フレーム更新間隔制御 ====
-// 初回（initialized=false）はスキップ禁止
-if (initialized && millis() - lastFrameTime < frameInterval) return;
-lastFrameTime = millis();
+    const int FRAME_INTERVAL_MS = 20;      // 描画更新間隔（高速）
+    const int SAMPLES_PER_FRAME = 5;       // ★ 1フレームで描く点数
+    const int SAMPLE_INTERVAL_MS = 1000;   // 1サンプル = 1秒
+    const int TIME_STEP_SEC = 10;           // X軸目盛り
+    const int MARGIN_LEFT = 30;
 
-    int totalHistory = min(300, historyIndex);
-    if (totalHistory == 0) return;
+    const int valueRangeMax =
+        max(1000, (maxCPM / 200 + 1) * 200);
+
+    // ==== フレーム間隔制御 ====
+    if (initialized && millis() - lastFrameTime < FRAME_INTERVAL_MS) return;
+    lastFrameTime = millis();
+
+    int totalHistory = historyCount;
+    if (totalHistory < 2) return;
 
     // ==== Cボタンで再生中断 ====
     if (M5.BtnC.wasPressed()) {
@@ -494,29 +854,35 @@ lastFrameTime = millis();
         return;
     }
 
-    // ==== 初期化（LOG画面切替時のみ） ====
+    int graphStartX = baseX + MARGIN_LEFT;
+    int graphEndX   = baseX + graphW - 1;
+
+    // ==== 初期化（LOG突入時のみ） ====
     if (!initialized) {
-        M5.Display.fillRect(baseX - 1, baseY - graphH - 1, graphW + 2, graphH + 25, BLACK);
-        
-        int graphStartX = baseX + MARGIN_LEFT;
-        int graphEndX = baseX + graphW - 1;
+        M5.Display.fillRect(
+            baseX - 1,
+            baseY - graphH - 1,
+            graphW + 2,
+            graphH + 25,
+            BLACK
+        );
 
         // 軸線
-        M5.Display.drawLine(graphStartX, baseY, graphEndX, baseY, TFT_DARKGREY); // X軸
-        M5.Display.drawLine(graphStartX, baseY - graphH, graphStartX, baseY, TFT_DARKGREY); // Y軸
+        M5.Display.drawLine(graphStartX, baseY, graphEndX, baseY, TFT_DARKGREY);
+        M5.Display.drawLine(graphStartX, baseY - graphH, graphStartX, baseY, TFT_DARKGREY);
 
         // ==== Y軸目盛り ====
-        const int step = valueRangeMax / 5;  // 5分割
-         for (int v = 0; v <= valueRangeMax; v += step) {
-         int y = baseY - map(v, 0, valueRangeMax, 0, graphH);
-         M5.Display.setTextSize(1);
-         M5.Display.setTextColor(TFT_DARKGREY, BLACK);
-         M5.Display.setCursor(baseX + 2, y - 3);
-         M5.Display.printf("%d", v);
-         M5.Display.drawLine(graphStartX - 3, y, graphStartX, y, TFT_DARKGREY);
+        int step = valueRangeMax / 5;
+        for (int v = 0; v <= valueRangeMax; v += step) {
+            int y = baseY - map(v, 0, valueRangeMax, 0, graphH);
+            M5.Display.setTextSize(1);
+            M5.Display.setTextColor(TFT_DARKGREY, BLACK);
+            M5.Display.setCursor(baseX + 2, y - 3);
+            M5.Display.printf("%d", v);
+            M5.Display.drawLine(graphStartX - 3, y, graphStartX, y, TFT_DARKGREY);
         }
 
-        // ==== X軸時間スケール ====
+        // ==== X軸時間スケール（0〜historyCount sec） ====
         int totalSec = totalHistory * (SAMPLE_INTERVAL_MS / 1000);
         for (int t = 0; t <= totalSec; t += TIME_STEP_SEC) {
             int x = graphStartX + map(t, 0, totalSec, 0, graphW - MARGIN_LEFT);
@@ -527,69 +893,210 @@ lastFrameTime = millis();
         initialized = true;
     }
 
-    // ==== 折れ線グラフ描画 ====
-    delay(100);
-    int graphStartX = baseX + MARGIN_LEFT;
-    int graphEndX = baseX + graphW - 1;
+    // ==== 折れ線描画（高速：複数サンプル） ====
+    float timePerSample =
+        (float)(graphW - MARGIN_LEFT) / (float)(totalHistory - 1);
 
-    int index = (historyIndex - totalHistory + replayFrameIndex + 300) % 300;
-    int cpm = cpmHistory[index];
-    int prevIndex = (index - 1 + 300) % 300;
-    int prevCPM = cpmHistory[prevIndex];
+    for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
+        if (replayFrameIndex >= totalHistory) break;
 
-    float timePerSample = (float)(graphW - MARGIN_LEFT) / totalHistory; // 横方向スケール
-    int x1 = graphStartX + (replayFrameIndex - 1) * timePerSample;
-    int x2 = graphStartX + replayFrameIndex * timePerSample;
-    int y1 = baseY - map(prevCPM, 0, valueRangeMax, 0, graphH);
-    int y2 = baseY - map(cpm,0, valueRangeMax, 0, graphH);
-    uint16_t col = getCPMColor(cpm);
+        int idx =
+            (historyIndex - totalHistory + replayFrameIndex + 300) % 300;
+        int pidx =
+            (idx - 1 + 300) % 300;
 
-    if (replayFrameIndex > 0 && x2 <= graphEndX)
-        M5.Display.drawLine(x1, y1, x2, y2, col);
+        int cpm  = cpmHistory[idx];
+        int pcpm = cpmHistory[pidx];
 
-    replayFrameIndex++;
+        if (replayFrameIndex > 0) {
+            int x1 = graphStartX + (replayFrameIndex - 1) * timePerSample;
+            int x2 = graphStartX + replayFrameIndex * timePerSample;
+            int y1 = baseY - map(pcpm, 0, valueRangeMax, 0, graphH);
+            int y2 = baseY - map(cpm,  0, valueRangeMax, 0, graphH);
+
+            if (x2 <= graphEndX) {
+                M5.Display.drawLine(x1, y1, x2, y2, getCPMColor(cpm));
+            }
+        }
+
+        replayFrameIndex++;
+    }
 
     // ==== 平均線 ====
     int avgCPM = getMovingAverageCPM();
     int avgY = baseY - map(avgCPM, 0, valueRangeMax, 0, graphH);
-    for (int x = graphStartX; x < graphEndX; x += 6)
+    for (int x = graphStartX; x < graphEndX; x += 6) {
         M5.Display.drawPixel(x, avgY, TFT_WHITE);
+    }
 
-    // ==== 平均ラベル（右端固定） ====
+    // ==== 平均ラベル ====
     int labelX = graphEndX - 70;
-    int labelY = constrain(avgY - 6, baseY - graphH + 5, baseY - 10);
-    M5.Display.setTextSize(1);
+    int labelY = constrain(avgY - 6,
+        baseY - graphH + 5,
+        baseY - 10
+    );
     M5.Display.fillRoundRect(labelX - 4, labelY - 2, 55, 12, 3, BLACK);
+    M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_WHITE);
     M5.Display.setCursor(labelX, labelY);
     M5.Display.printf("Avg:%d", avgCPM);
 
-    // ==== グラフ下ラベル ====
-    int displayWidth = min(graphW, totalHistory);
+    // ==== グラフ下ラベル（横軸と一致） ====
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_DARKGREY, BLACK);
-    M5.Display.setCursor(graphStartX + (graphW - MARGIN_LEFT) / 2 - 30, baseY + 10);
-    M5.Display.printf("Last %d sec", displayWidth * (SAMPLE_INTERVAL_MS / 1000));
+    M5.Display.setCursor(
+        graphStartX + (graphW - MARGIN_LEFT) / 2 - 30,
+        baseY + 10
+    );
+    M5.Display.printf("0 ───────── %d sec", totalHistory);
 
-    // ==== 再生終了処理（1回のみ再生） ====
+    // ==== 再生終了 ====
     if (replayFrameIndex >= totalHistory) {
         isReplaying = false;
         replayFrameIndex = 0;
         initialized = false;
-        // 🔸 LOG切替時バイブ（短く弱め）
         pulseVibration(150, 200);
-        return;
+    }
+}
+
+//PCstatus描画
+void drawBar(const char* label, int v, int y) {
+    int x = 90, w = 170, h = 14;
+
+    uint16_t col =
+        (v >= 90) ? TFT_RED :
+        (v >= 70) ? TFT_YELLOW :
+                    TFT_GREEN;
+
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_LIGHTGREY);
+    M5.Display.drawString(label, 18, y);
+
+    M5.Display.drawRect(x, y, w, h, TFT_DARKGREY);
+    M5.Display.fillRect(x + 1, y + 1,
+        map(v, 0, 100, 0, w - 2), h - 2, col);
+}
+
+// ==== Disk R/W アクティビティバー ====
+// level: 0〜5
+void drawActivityBar(const char* label, uint8_t level, int y) {
+    const int x = 90;
+    const int barW = 170;
+    const int barH = 10;
+    const int blocks = 5;
+    const int gap = 3;
+
+    int blockW = (barW - (blocks - 1) * gap) / blocks;
+
+    // ラベル
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_LIGHTGREY, BLACK);
+    M5.Display.drawString(label, 18, y);
+
+    // バー描画
+    for (int i = 0; i < blocks; i++) {
+        int bx = x + i * (blockW + gap);
+
+        uint16_t col;
+        if (i < level) {
+            if (i >= 3)      col = TFT_RED;      // 高負荷
+            else if (i >= 2) col = TFT_YELLOW;
+            else             col = TFT_GREEN;
+        } else {
+            col = TFT_DARKGREY;
+        }
+
+        M5.Display.fillRect(bx, y, blockW, barH, col);
     }
 }
 
 
-// ==== 保存関数 ====
-void saveStats() {
-    prefs.putULong64("totalKeystrokes", totalKeystrokes);
-    prefs.putUInt("maxCPM", maxCPM);
-    prefs.putUInt("sumValue", sumValue);
-    prefs.putUInt("sampleCount", sampleCount);
+void updateBar(const char* label, int v, int y) {
+    int x = 90, w = 170, h = 14;
+
+    // バー領域だけ消す
+    M5.Display.fillRect(x, y, w, h, BLACK);
+
+    uint16_t col =
+        (v >= 90) ? TFT_RED :
+        (v >= 70) ? TFT_YELLOW :
+                    TFT_GREEN;
+
+    M5.Display.drawRect(x, y, w, h, TFT_DARKGREY);
+    M5.Display.fillRect(
+        x + 1, y + 1,
+        map(v, 0, 100, 0, w - 2),
+        h - 2,
+        col
+    );
 }
+
+void drawValueText(
+    int x,
+    int y,
+    int value,
+    const char* unit = "%",
+    bool dangerRed = false
+) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%3d%s", value, unit);
+
+    // 数値エリアだけ消す
+    M5.Display.fillRect(x, y, 60, 20, BLACK);
+
+    // 🔴 80%以上なら赤
+    if (dangerRed && value >= 80) {
+        M5.Display.setTextColor(TFT_RED);
+    } else {
+        M5.Display.setTextColor(meterColor);
+    }
+
+    M5.Display.setTextSize(2);
+    M5.Display.drawString(buf, x, y);
+}
+
+void drawFloatValueText(int x, int y, float value) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%4.1f", value);
+
+    M5.Display.fillRect(x, y, 60, 20, BLACK);
+    M5.Display.setTextColor(meterColor);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString(buf, x, y);
+}
+
+
+void drawPCStatusScreen() {
+    M5.Display.fillScreen(BLACK);
+    M5.Display.setTextColor(meterColor);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("PC STATUS", 180, 10);
+    M5.Display.drawLine(10, 40, 310, 40, TFT_DARKGREY);
+
+    drawBar("CPU:",    pc_cpu,   60);
+    drawValueText(260, 60, pc_cpu, "%", true);
+
+    drawBar("RAM:",    pc_ram,  100);
+    drawValueText(260,100, pc_ram, "%", true);
+
+    drawBar("DISKu:", pc_disk, 140);
+    drawValueText(260,140, pc_disk, "%", true);
+
+    drawActivityBar("DISKr:", pc_disk_r_level, 180);
+    drawFloatValueText(260, 180, pc_disk_r_mbps);
+
+    drawActivityBar("DISKw:", pc_disk_W_level, 200);
+    drawFloatValueText(260, 200, pc_disk_w_mbps);
+
+    // 初期値保存
+    last_cpu    = pc_cpu;
+    last_ram    = pc_ram;
+    last_disk   = pc_disk;
+    last_disk_r = pc_disk_r_level;
+    last_disk_w = pc_disk_W_level;
+}
+
+
 
 // ==== 針削除単独実行====
 void ClearNeedle(int value, int oldValue) {
@@ -867,7 +1374,7 @@ for (int i = 0; i <= tickCount; i++) {
 void drawFuelTimeOverlay(unsigned long remainingMs, bool isDemo) {
     // Fuelメーターの位置・サイズ（今の実装に合わせて固定）
     const int cx = 45;
-    const int cy = 80;
+    const int cy = 100;
     const int r  = 46;
 
     // クリア領域（燃料計の上の帯を消去）
@@ -932,7 +1439,7 @@ void updatePomodoro() {
     fuelLevel = newLevel;  // 値だけ更新（常に進行）
 
     // ==== 🔸描画はメーターモードのときのみ ====
-    if (displayMode != MODE_LOG) {
+    if (displayMode == MODE_METER){
         if (millis() - lastFuelDraw > 200) {
             drawFuelMeter(newLevel);
             lastFuelDraw = millis();
@@ -1070,11 +1577,11 @@ void updatePomodoro() {
         // 「NEXT SESSION!」を一瞬表示
         M5.Display.setTextColor(TFT_ORANGE, BLACK);
         M5.Display.setTextSize(2);
-        M5.Display.fillRect(5, 5, 210, 40, BLACK);
-        M5.Display.setCursor(10, 10);
+        M5.Display.fillRect(5, 20, 210, 30, BLACK);
+        M5.Display.setCursor(10, 20);
         M5.Display.print("NEXT SESSION_");
         delay(1000);
-        M5.Display.fillRect(5, 5, 210, 40, BLACK);
+        M5.Display.fillRect(5, 20, 210, 30, BLACK);
     } else {
         pomoMode = POMO_OFF;
     }
@@ -2166,12 +2673,15 @@ void resetStats() {
     sampleCount = 0;
     memset(cpmHistory, 0, sizeof(cpmHistory));
     historyIndex = 0;
+    sessionSumCPM = 0;
+    sessionCountCPM = 0;
     
     // ✅ 統計だけ消す（vibrationEnabled等は保持）
     prefs.remove("totalKeystrokes");
     prefs.remove("maxCPM");
     prefs.remove("sumValue");
     prefs.remove("sampleCount");
+    prefs.remove("logSnap");
 
     M5.Display.fillScreen(BLACK);
     M5.Display.setTextColor(TFT_GREEN);
@@ -2215,6 +2725,11 @@ void receiveEvent(int bytes) {
         activeSource = SRC_I2C;
         Serial.printf("I2C Received Layer=%d\n", layer);
     }
+
+    else if (cmd >= 0x20 && bytes >= 1) {
+        uint8_t v = Wire.read();
+        applyPCStatus(cmd, v);
+    }
 }
 
 // ==== USB Serial からの受信処理 ====
@@ -2235,12 +2750,12 @@ void processUSBSerial() {
         switch (usb_state) {
 
         // ---- ヘッダ待ち ----
-        case 0:  
-            if (b == 0x01) {       // CPM
-                usb_state = 1;
-            } 
-            else if (b == 0x02) {  // Layer
-                usb_state = 3;
+        case 0:
+            if (b == 0x01) usb_state = 1;
+            else if (b == 0x02) usb_state = 3;
+            else if (b >= 0x20 && b <= 0x26) {
+                usb_state = 10;
+                lastCmd = b;
             }
             break;
 
@@ -2267,6 +2782,12 @@ void processUSBSerial() {
             activeSource = SRC_USB;
             usb_state = 0;
             break;
+        
+            case 10:  // PC Status payload
+            applyPCStatus(lastCmd, b);
+            usb_state = 0;
+            break;
+
         }
     }
 }
@@ -2295,6 +2816,12 @@ void processBTSerial() {
             uint8_t layer = SerialBT.read();
             applyLayer(layer);
             activeSource = SRC_BT;
+        }
+
+        else if (cmd >= 0x20 && cmd <= 0x26) {
+            if (!SerialBT.available()) return;
+            uint8_t v = SerialBT.read();
+            applyPCStatus(cmd, v);
         }
     }
 }
@@ -2387,9 +2914,9 @@ void startupSweep() {
 }
 
 // ==== 起動時モード選択 ====
-// A: USB/BT, B: I2C, C: DEMO（5秒無操作で I2C デフォルト）
+// A: USB/BT, B: I2C, C: DEMO
 void selectAppMode() {
-    appMode = MODE_I2C;  // デフォルト
+    appMode = MODE_I2C;  // デフォルト（未選択時）
 
     M5.Display.fillScreen(BLACK);
     M5.Display.setTextSize(2);
@@ -2402,13 +2929,15 @@ void selectAppMode() {
     M5.Display.println("B: I2C");
     M5.Display.setCursor(40, 160);
     M5.Display.println("C: DEMO");
+
     M5.Display.setTextSize(1);
     M5.Display.setCursor(40, 200);
-    M5.Display.println("(5 sec timeout -> I2C)");
+    M5.Display.println("Press a button to continue");
 
-    unsigned long start = millis();
-    while (millis() - start < 5000) {
+    // ★ タイムアウトなし
+    while (true) {
         M5.update();
+
         if (M5.BtnA.wasPressed()) {
             appMode = MODE_USB_BT;
             break;
@@ -2424,7 +2953,7 @@ void selectAppMode() {
         delay(10);
     }
 
-    // モード確定表示
+    // モード確定表示（必要なら）
     M5.Display.fillScreen(BLACK);
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(TFT_GREEN, BLACK);
@@ -2433,9 +2962,112 @@ void selectAppMode() {
     if (appMode == MODE_USB_BT) M5.Display.print("USB/BT");
     else if (appMode == MODE_I2C) M5.Display.print("I2C");
     else if (appMode == MODE_DEMO) M5.Display.print("DEMO");
-    delay(600);
+
+    delay(400);  // ← 完全になくしてもOK
 }
 
+
+//バッテリー描画消去関数
+void clearBatteryIndicator() {
+  int x = 30;
+  int y = 5;
+  int h = 10;
+
+  // 数値表示エリアだけ消す
+  M5.Display.fillRect(x - 32, y, 30, h, BLACK);
+
+  // ゲージ内部も消す（枠は残す設計）
+  M5.Display.fillRect(x + 1, y + 1, 25 - 2, h - 2, BLACK);
+}
+
+//バッテリー更新関数
+void updateBatteryStatus() {
+  uint32_t now = millis();
+  if (now - lastBattMs < BATT_UPDATE_MS) return;
+  lastBattMs = now;
+
+  batteryPct  = M5.Power.getBatteryLevel();
+  batteryVolt = M5.Power.getBatteryVoltage() / 1000.0f;
+  batteryChg  = M5.Power.isCharging();
+}
+
+void drawBatteryIndicator() {
+  int x = 30;
+  int y = 5;
+  int w = 25;
+  int h = 10;
+
+  uint16_t color;
+  if (batteryChg)          color = meterColor;
+  else if (batteryPct > 30) color = meterColor;
+  else if (batteryPct > 10) color = YELLOW;
+  else                      color = RED;
+
+  uint16_t textcolor;
+  if (batteryChg)          textcolor = CYAN;
+  else if (batteryPct > 30) textcolor = meterColor;
+  else if (batteryPct > 10) textcolor = YELLOW;
+  else                      textcolor = RED;
+
+  // 枠
+  M5.Display.drawRect(x, y, w, h, color);
+  M5.Display.fillRect(x + w, y + 4, 3, h - 8, color); // 端子
+
+  // 中身
+  int fill = map(batteryPct, 0, 100, 0, w - 2);
+  M5.Display.fillRect(x + 1, y + 1, fill, h - 2, color);
+
+  // 数値（小）
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(textcolor);
+  M5.Display.setCursor(x - 28, y + 2);
+  M5.Display.printf("%d%%", batteryPct);
+}
+
+void updateBatteryUI() {
+  // 変化検出
+  if (batteryPct != lastBatteryPct ||
+      batteryChg != lastBatteryChg) {
+
+    clearBatteryIndicator();   // ★ 変化時だけ消す
+    batteryDirty = true;
+
+    lastBatteryPct = batteryPct;
+    lastBatteryChg = batteryChg;
+  }
+}
+
+void updateDemoData() {
+    unsigned long now = millis();
+    if (now - lastDemoTick < 200) return;  // 200ms 更新
+    lastDemoTick = now;
+
+    // ===== CPM（サイン波＋ランダム）
+    int base = 600 + 400 * sin(demoPhase * 0.05f);
+    int noise = random(-80, 80);
+    int demoCPM = constrain(base + noise, 0, VALUE_MAX);
+    applyCPM(demoCPM);
+
+    // ===== PC Status（CPU / RAM / DISK）
+    pc_cpu  = constrain(40 + 30 * sin(demoPhase * 0.03f), 0, 100);
+    pc_ram  = constrain(55 + 25 * sin(demoPhase * 0.02f + 1.0f), 0, 100);
+    pc_disk = constrain(20 + 60 * abs(sin(demoPhase * 0.015f)), 0, 100);
+
+    // ===== Disk R/W アクティビティ（0〜5）
+    pc_disk_r_level = random(0, 6);
+    pc_disk_W_level = random(0, 6);
+
+    // ===== Disk MB/s（バーとは独立）
+    pc_disk_r_mbps = pc_disk_r_level * random(5, 20) / 10.0f;
+    pc_disk_w_mbps = pc_disk_W_level * random(3, 15) / 10.0f;
+
+    // ===== レイヤー（0〜4 ローテーション）
+    if (demoPhase % 20 == 0) {
+        applyLayer((demoPhase / 20) % 5);
+    }
+
+    demoPhase++;
+}
 
 
 
@@ -2452,6 +3084,9 @@ void setup() {
     M5.Power.setLed(0);  // Disable LED at startup for unified
 
     Serial.begin(115200);
+    delay(200);
+    sendDeviceId();
+    deviceIdSent = true;
     Serial.println("M5Core2 Typing Meter");
 
     // ★ 起動時モード選択
@@ -2465,7 +3100,7 @@ void setup() {
     }
 
     if (appMode == MODE_USB_BT) {
-        SerialBT.begin("TypingMeter"); // 任意の名前
+        SerialBT.begin("TypingBridge"); // 任意の名前
         Serial.println("Mode: USB/BT (Serial + BT)");
     }
 
@@ -2476,6 +3111,16 @@ void setup() {
 
     prefs.begin("typingmeter", false);
     prefsVibe.begin("vibe", false);
+    
+    if (prefs.isKey("logSnap")) {
+        LogSnapshot s;
+        prefs.getBytes("logSnap", &s, sizeof(s));
+        totalSec = s.totalSec;
+        totalKeystrokes = s.totalKS;
+        maxCPM = s.maxCPM;
+        lastSessionAvgCPM = s.lastAvgCPM;
+
+    }
 
     pinMode(btnA_pin, INPUT_PULLUP);
     pinMode(btnB_pin, INPUT_PULLUP);
@@ -2483,12 +3128,6 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(btnB_pin), btnB_ISR, FALLING);
 
     Serial.println("M5Core2 Meter Ready");
-
-
-    // ...（この下は元の setup と同じ：Preferences 読み出し・色読み出し
-    //      Display 初期化・drawMeterBackground()・startupSweep() など）
-
-
     
     // 記録された色インデックスを読み出し
     colorIndex = prefs.getInt("meterColorIdx", 0);
@@ -2496,7 +3135,10 @@ void setup() {
 
     M5.Display.clearDisplay(TFT_BLACK);
     M5.Display.setRotation(1);  
-    
+
+    //起動時からの経過時間（グラフ描画用）
+    bootTimeMs = millis();
+
     // 1) 背景を最初に完全描画
     drawMeterBackground();
     drawFuelMeter(fuelLevel);
@@ -2508,13 +3150,33 @@ void setup() {
     drawMeterBackground();
     drawFuelMeter(fuelLevel);
     drawShiftIndicator();
-
 }
 
 // ==== メインループ ====
 void loop() {
     M5.update();
     updatePomodoro();
+    updateBatteryStatus();
+    updateBatteryUI();
+    if (appMode == MODE_USB_BT) {
+    processHello();
+    }     
+
+    if (!screenSaverActive) {
+        drawBatteryIndicator();
+    }
+    
+    unsigned long now = millis();
+    if (now - lastTickMs >= 1000) {
+            lastTickMs += 1000;
+            onSecondTick();//Global 1-second tick
+        }
+
+ // ==== DEMO モード処理 ====
+if (appMode == MODE_DEMO) {
+    updateDemoData();
+}
+
 // ==== 起動直後のボタン誤動作防止 ====
 static bool skipButtonsOnce = true;
 if (skipButtonsOnce) {
@@ -2540,6 +3202,55 @@ if (prevSource != activeSource) {
         M5.Power.setLed(false);
     }
 }
+
+//PCstatus自動更新
+
+if (displayMode == MODE_PCSTAT && !screenSaverActive) {
+   
+    if (pc_cpu != last_cpu) {
+    updateBar("CPU:", pc_cpu, 60);
+    drawValueText(260, 60, pc_cpu, "%", true);
+    last_cpu = pc_cpu;
+    }
+
+    if (pc_ram != last_ram) {
+        updateBar("RAM:", pc_ram, 100);
+        drawValueText(260, 100, pc_ram, "%", true);
+        last_ram = pc_ram;
+    }
+
+
+    if (pc_disk != last_disk) {
+    drawBar("DISKu:", (int)pc_disk, 140);
+    drawValueText(260,140, pc_disk, "%");
+    last_disk = pc_disk;
+    }
+
+
+    if (pc_disk_r_level != last_disk_r) {
+    drawActivityBar("DISKr:", pc_disk_r_level, 180);
+    drawFloatValueText(260, 180, pc_disk_r_mbps);
+    last_disk_r = pc_disk_r_level;
+    }
+
+    if (pc_disk_W_level != last_disk_w) {
+    drawActivityBar("DISKw:", pc_disk_W_level, 200);
+    drawFloatValueText(260, 200, pc_disk_w_mbps);
+    last_disk_w = pc_disk_W_level;
+}
+
+    if (fabs(pc_disk_r_mbps - last_disk_r_mbps) > 0.05f) {
+        drawFloatValueText(260, 180, pc_disk_r_mbps);
+        last_disk_r_mbps = pc_disk_r_mbps;
+    }
+
+
+    if (fabs(pc_disk_w_mbps - last_disk_w_mbps) > 0.05f) {
+        drawFloatValueText(260, 200, pc_disk_w_mbps);
+        last_disk_w_mbps = pc_disk_w_mbps;
+    }
+}
+
 
 
 // --- レイヤー更新フラグが立っていたら即描画 ---
@@ -2603,7 +3314,7 @@ static bool settingsHandled = false;
     drawMeterBackground();
     changeShift(SHIFT_M);
     drawShiftIndicator_light();
-    drawFuelMeter(fuelLevel);
+    drawFuelMeter(fuelLevel); 
     }
 settingsHandled = false;
 }
@@ -2622,13 +3333,13 @@ if (M5.BtnB.pressedFor(2000)) {
         // === 各モード設定 ===
         if (pomoCycle == 0) {        // OFF
             pomoMode = POMO_OFF;
-            M5.Display.fillRect(5, 5, 210, 40, BLACK);
+            M5.Display.fillRect(5, 20, 210, 30, BLACK);
             M5.Display.setTextColor(TFT_LIGHTGREY, BLACK);
             M5.Display.setTextSize(2);
-            M5.Display.setCursor(10, 10);
+            M5.Display.setCursor(10, 23);
             M5.Display.print("Pomodoro: OFF");
             delay(800);
-            M5.Display.fillRect(5, 5, 210, 40, BLACK);
+            M5.Display.fillRect(5, 20, 210, 30, BLACK);
             fuelLevel = 100;
             drawFuelMeter(fuelLevel);
             return;  // ここで終了（他処理に進まない）
@@ -2652,13 +3363,13 @@ if (M5.BtnB.pressedFor(2000)) {
         // 左上にモード名表示
         M5.Display.setTextColor(TFT_ORANGE, BLACK);
         M5.Display.setTextSize(2);
-        M5.Display.fillRect(5, 5, 210, 40, BLACK);
-        M5.Display.setCursor(10, 10);
+        M5.Display.fillRect(5, 20, 210, 30, BLACK);
+        M5.Display.setCursor(10, 23);
         if (pomoCycle == 1) M5.Display.print("Pomodoro_25min");
         else if (pomoCycle == 2) M5.Display.print("Pomodoro_45min");
         else if (pomoCycle == 3) M5.Display.print("Pomodoro_DEMO");
         delay(1000);
-        M5.Display.fillRect(5, 5, 210, 40, BLACK);
+        M5.Display.fillRect(5, 20, 210, 30, BLACK);
     }
 }
 else if (M5.BtnB.wasReleased()) {
@@ -2689,16 +3400,25 @@ if (M5.BtnC.pressedFor(2000)) {
 } else if (M5.BtnC.wasReleased()) {
     if (!longPressHandled) {  
         // 現在のモードに基づいて次のモードを決定
-        DisplayMode nextMode = (displayMode == MODE_METER) ? MODE_LOG : MODE_METER;
+        DisplayMode nextMode =
+            (displayMode == MODE_METER) ? MODE_LOG :
+            (displayMode == MODE_LOG)   ? MODE_PCSTAT :
+                                        MODE_METER;
+
         displayMode = nextMode;  // モードを更新
+        M5.Display.fillScreen(BLACK); // 必ず一度クリア
 
         if (nextMode == MODE_LOG) {
             drawLogScreen();  // Logモード用描画のみ
-        } else {    
-            drawMeterBackground();   
+
+        }else if (displayMode == MODE_PCSTAT) {
+            drawPCStatusScreen();
+        }
+        else if (displayMode == MODE_METER) {
+            drawMeterBackground();
+            drawFuelMeter(fuelLevel);
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
-            drawFuelMeter(fuelLevel);
         }
     }
     longPressHandled = false;
@@ -2706,7 +3426,7 @@ if (M5.BtnC.pressedFor(2000)) {
 
 // ==== スクリーンセーバー制御（完全安定版） ====
 static bool screenSaverMode = true;         // ON/OFFトグル（長押しで切替）
-static bool screenSaverActive = false;      // 実際にセーバー動作中か
+//static bool screenSaverActive = false;      // 実際にセーバー動作中か
 static unsigned long lastActivityTime = 0;  // CPM・操作の最終時刻
 static unsigned long screenSaverRecoveryUntil = 0; // 復帰後のセーフ期間
 static bool touchHeld = false;
@@ -2714,6 +3434,17 @@ static unsigned long touchStartTime = 0;
 
 const int TOUCH_HOLD_MS = 1500;             // 長押し時間（1.5秒）
 const unsigned long AUTO_TIMEOUT_MS = 30000; // 無操作発動時間（30秒）
+
+bool needleMoving = (prevValue > 0);
+
+// === 針が「動いていた → 完全停止」した瞬間を検出 ===
+if (needleWasMoving && !needleMoving) {
+    // ★ ここが重要：停止した瞬間を「最後の操作」とする
+    lastActivityTime = millis();
+}
+
+needleWasMoving = needleMoving;
+
 
 
 auto p = M5.Touch.getDetail();
@@ -2776,6 +3507,10 @@ if (displayMode == MODE_LOG) screenSaverActive = false;
 
 // ==== 条件③：無操作経過時間 ====
 bool idleTooLong = (millis() - lastActivityTime > AUTO_TIMEOUT_MS);
+// ★ 針が戻りきるまではスクリーンセーバー禁止
+if (prevValue > 0) {
+    idleTooLong = false;
+}
 
 // ==== ABCボタンいずれかが押された場合無操作時間をリセット ====  
 if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) {
@@ -2787,8 +3522,9 @@ if (displayMode == MODE_METER && targetValue > 0) {
     idleTooLong = false;
 }
 
-// ===LOG モード中は完全禁止（M5Unified でも同じ）===
-if (displayMode == MODE_LOG) {idleTooLong = false;
+// ==== LOG / PCSTATUS モード中はスクリーンセーバー完全禁止 ====
+if (displayMode == MODE_LOG || displayMode == MODE_PCSTAT) {
+    idleTooLong = false;
 }
 
 // 🔸 復帰直後5秒間はセーバー禁止
@@ -2800,6 +3536,7 @@ if (millis() < screenSaverRecoveryUntil) {
 // ==== LOG モード中はスクリーンセーバー完全禁止 ====
 if (displayMode != MODE_LOG) {
     if (screenSaverMode && !pomodoroActiveNow && !screenSaverActive && idleTooLong) {
+        prevDisplayMode = displayMode;
         screenSaverActive = true;
         delay(100);
         M5.Display.fillScreen(BLACK);
@@ -2812,19 +3549,27 @@ if (screenSaverActive) {
     if (targetValue > 0 || M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) {
         screenSaverActive = false;
 
-        // 🩵 無操作タイマーをリセットし再発動防止
         lastActivityTime = millis();
-        screenSaverRecoveryUntil = millis() + 5000; // 復帰後5秒は無効
+        screenSaverRecoveryUntil = millis() + 5000;
 
-        // 🔸 LOGMODEから復帰する場合は自動で解除
-        displayMode = MODE_METER;
+        // ★ 保存しておいたモードに戻す
+        displayMode = prevDisplayMode;
 
-        // --- 背景クリア＋再描画 ---
         M5.Display.fillScreen(BLACK);
-        drawMeterBackground();
-        drawFuelMeter(fuelLevel);
-        changeShift(SHIFT_M);
-        drawShiftIndicator_light();
+
+        if (displayMode == MODE_METER) {
+            drawMeterBackground();
+            drawFuelMeter(fuelLevel);
+            changeShift(SHIFT_M);
+            drawShiftIndicator_light();
+        }
+        else if (displayMode == MODE_PCSTAT) {
+            drawPCStatusScreen();
+        }
+        else if (displayMode == MODE_LOG) {
+            drawLogScreen();
+        }
+
     } else {
         // セーバー描画継続
         drawNightCityDrive();
