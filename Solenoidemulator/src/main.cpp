@@ -5,6 +5,19 @@
 
 #define I2C_ADDRESS 0x20
 
+// ==== Battery status ====
+uint8_t batteryPct   = 0;
+float   batteryVolt  = 0.0f;
+bool    batteryChg   = false;
+uint32_t lastBattMs  = 0;
+const uint32_t BATT_UPDATE_MS = 2000;  // 2秒に1回
+static int  lastBatteryPct = -1;
+static bool lastBatteryChg = false;
+static bool batteryDirty   = true;  // 初回描画用
+
+
+
+
 Preferences prefs;
 BluetoothSerial SerialBT;
 
@@ -110,6 +123,7 @@ void makeClickWave() {
 // 音再生（非ブロッキング）
 // ======================================================
 inline void playClick() {
+  M5.Speaker.stop();
   makeClickWave();
   M5.Speaker.setVolume(soundVolume);  // 既に80上限で制限済み
   M5.Speaker.playRaw(
@@ -226,7 +240,7 @@ uint32_t      solLastStepMs = 0;
 
 // パラメータ
 const int SOL_NORMAL_STEP_INTERVAL_MS = 3;   // ピストン1ステップ(描画)の間隔
-const int SOL_FAST_GAP_MS             = 10;  // 2段クリック間のギャップ
+const int SOL_FAST_GAP_MS             = 16;  // 2段クリック間のギャップ
 const int FAST_THRESHOLD_MS           = 30;  // これより短い間隔なら FAST モード
 
 // NORMAL モード開始（ピストンアニメ＋2段目クリック）
@@ -314,6 +328,19 @@ inline void solenoidEffect() {
 inline void solenoidFastClick() {
   startFastSolenoid();
 }
+//ソレノイド起動用の共通関数を作る
+inline void fireSolenoidByTiming() {
+  uint32_t nowMs   = millis();
+  uint32_t deltaMs = nowMs - lastFireMs;
+  lastFireMs       = nowMs;
+
+  if (deltaMs < FAST_THRESHOLD_MS) {
+    startFastSolenoid();
+   //solenoidEffect();
+  } else {
+    solenoidEffect();
+  }
+}
 
 // ======================================================
 // I2C受信 ISR
@@ -351,7 +378,6 @@ void onReceiveEvent(int numBytes) {
   solenoidRequestTime = millis();  // ISR でも OK（読むだけ）
 }
 
-
 // ======================================================
 // 設定UI
 // ======================================================
@@ -360,7 +386,7 @@ void drawConfigUI() {
   M5.Display.fillScreen(BLACK);
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(ORANGE);
-  M5.Display.setCursor(20, 10);
+  M5.Display.setCursor(20, 20);
   M5.Display.println("SETTINGS MODE");
 
   M5.Display.setTextColor(WHITE);
@@ -433,12 +459,14 @@ void handleConfigTouch() {
       M5.Display.fillScreen(BLACK);
       M5.Display.setTextSize(2);
       M5.Display.setTextColor(ORANGE);
-      M5.Display.setCursor(20, 20);
-      M5.Display.println("The ExtEnd_I2C Solenoid");
+      M5.Display.setCursor(0, 30);
+      M5.Display.println("Solenoid Emulator");
+      M5.Display.setTextSize(1);
       M5.Display.setTextColor(WHITE);
       M5.Display.println("Hold screen to open settings");
       drawSolenoid(0);
       drawCommIndicator();
+      batteryDirty = true;
     }
   }
 
@@ -463,6 +491,7 @@ void checkTouchToConfig() {
       configMode      = true;
       configEntryTime = millis();
       drawConfigUI();
+      batteryDirty = true;
     }
   } else {
     touchStart = 0;
@@ -488,18 +517,7 @@ void handleSerialByte(uint8_t b, CommSource src) {
       }
       // ★★★ Solenoid コマンド（1バイト完結）★★★
       else if (b == 0x10 || b == 0x11) {
-        // ここだけでソレノイドを発火させる（CPMバイトでは鳴らさない）
-        uint32_t nowMs   = millis();
-        uint32_t deltaMs = nowMs - lastFireMs;
-        lastFireMs       = nowMs;
-
-        if (deltaMs < FAST_THRESHOLD_MS) {
-          // 高速連打 → FAST モード（音だけ2段クリック）
-          startFastSolenoid();
-        } else {
-          // 通常 → ピストンアニメ付き
-          solenoidEffect();
-        }
+      fireSolenoidByTiming();
       }
       // その他のバイトは無視
       break;
@@ -573,13 +591,9 @@ void drawModeSelectScreen() {
   // I2C
   int y2 = 130;
   M5.Display.drawRect(x, y2, w, h, YELLOW);
-  M5.Display.setCursor(x + 10, y2 + 5);
+  M5.Display.setCursor(x + 10, y2 + 10);
   M5.Display.setTextSize(2);
-  M5.Display.print("I2C (NO BATTERY)");
-
-  M5.Display.setTextSize(1);
-  M5.Display.setCursor(x + 10, y2 + 28);
-  M5.Display.print("Remove battery before use");
+  M5.Display.print("I2C(TheExtrend_stack)");
 
   // Demo
   int y3 = 190;
@@ -656,6 +670,78 @@ void selectStartupMode() {
   }
 }
 
+//バッテリー描画消去関数
+void clearBatteryIndicator() {
+  int x = 30;
+  int y = 5;
+  int h = 10;
+  // 数値表示エリアだけ消す
+  M5.Display.fillRect(x - 32, y, 30, h, BLACK);
+  // ゲージ内部も消す（枠は残す設計）
+  M5.Display.fillRect(x + 1, y + 1, 25 - 2, h - 2, BLACK);
+}
+
+//バッテリー更新関数
+void updateBatteryStatus() {
+  uint32_t now = millis();
+  if (now - lastBattMs < BATT_UPDATE_MS) return;
+  lastBattMs = now;
+
+  batteryPct  = M5.Power.getBatteryLevel();
+  batteryVolt = M5.Power.getBatteryVoltage() / 1000.0f;
+  batteryChg  = M5.Power.isCharging();
+}
+
+void drawBatteryIndicator() {
+  int x = 30;
+  int y = 5;
+  int w = 25;
+  int h = 10;
+
+  uint16_t color;
+  if (batteryChg)          color = CYAN;
+  else if (batteryPct > 30) color = GREEN;
+  else if (batteryPct > 10) color = YELLOW;
+  else                      color = RED;
+
+  uint16_t textcolor;
+  if (batteryChg)          textcolor = CYAN;
+  else if (batteryPct > 30) textcolor = GREEN;
+  else if (batteryPct > 10) textcolor = YELLOW;
+  else                      textcolor = RED;
+
+  // 枠
+  M5.Display.drawRect(x, y, w, h, color);
+  M5.Display.fillRect(x + w, y + 4, 3, h - 8, color); // 端子
+
+  // 中身
+  int fill = map(batteryPct, 0, 100, 0, w - 2);
+  M5.Display.fillRect(x + 1, y + 1, fill, h - 2, color);
+
+  // 数値（小）
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(textcolor);
+  M5.Display.setCursor(x - 28, y + 2);
+  M5.Display.printf("%d%%", batteryPct);
+}
+
+
+void updateBatteryUI() {
+  // 変化検出
+  if (batteryPct != lastBatteryPct ||
+      batteryChg != lastBatteryChg) {
+
+
+    clearBatteryIndicator();   // ★ 変化時だけ消す
+    batteryDirty = true;
+
+
+    lastBatteryPct = batteryPct;
+    lastBatteryChg = batteryChg;
+  }
+}
+
+
 // ======================================================
 // 初期化
 // ======================================================
@@ -698,18 +784,22 @@ void setup() {
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(ORANGE);
   M5.Display.fillScreen(BLACK);
-  M5.Display.setCursor(20, 20);
-  M5.Display.println("The ExtEnd_I2C Solenoid");
+  M5.Display.setCursor(0, 30);
+  M5.Display.println("Solenoid Emulator");
   M5.Display.setTextColor(WHITE);
 
   if (appMode == MODE_USB_BT) {
+    M5.Display.setTextColor(GREEN);
     M5.Display.println("Mode: USB / Bluetooth");
   } else if (appMode == MODE_I2C) {
-    M5.Display.println("Mode: I2C (Battery removed)");
+    M5.Display.setTextColor(GREEN);
+    M5.Display.println("Mode: I2C");
   } else {
+    M5.Display.setTextColor(GREEN);
     M5.Display.println("Mode: Demo (local only)");
   }
-
+  M5.Display.setTextSize(1);
+   M5.Display.setTextColor(WHITE);
   M5.Display.println("Hold screen to open settings");
   drawSolenoid(0);
   drawCommIndicator();
@@ -720,25 +810,22 @@ void setup() {
 // ======================================================
 void loop() {
   M5.update();
+  //
+  updateBatteryStatus();
+  updateBatteryUI();
+  if (batteryDirty) {
+  drawBatteryIndicator();
+  batteryDirty = false;   // ← ★ここで false に戻る
+}
+
 
   // ⭐ 毎フレーム ソレノイド ステートマシン更新
   updateSolenoid();
-
   updateVibrationPulse();  // ★追加：振動OFF制御
-  updateSolenoid();        // 既存：アニメ更新
 
     if (solenoidRequest) {
     solenoidRequest = false;
-
-    uint32_t nowMs   = millis();
-    uint32_t deltaMs = nowMs - lastFireMs;
-    lastFireMs       = nowMs;
-
-    if (deltaMs < FAST_THRESHOLD_MS) {
-      startFastSolenoid();   // ← vibration OK
-    } else {
-      solenoidEffect();      // ← vibration OK
-    }
+    fireSolenoidByTiming();
   }
 
   // 通信インジケータ更新（ソース変化時のみ）
@@ -770,17 +857,20 @@ void loop() {
     if (M5.BtnA.isHolding() || M5.BtnB.isHolding() || M5.BtnC.isHolding()) {
       configMode = false;
       saveConfig();
+      vibEnabled = true;                 // ★ 強制ON
+      M5.Power.setVibration(0);          // 念のため
+
       M5.Display.fillScreen(BLACK);
       M5.Display.setTextSize(2);
       M5.Display.setTextColor(ORANGE);
-      M5.Display.setCursor(20, 20);
-      M5.Display.println("The ExtEnd_I2C Solenoid");
+      M5.Display.setCursor(0, 30);
+      M5.Display.println("Solenoid Emulator");
       M5.Display.setTextColor(WHITE);
 
       if (appMode == MODE_USB_BT) {
         M5.Display.println("Mode: USB / Bluetooth");
       } else if (appMode == MODE_I2C) {
-        M5.Display.println("Mode: I2C (Battery removed)");
+        M5.Display.println("Mode: I2C");
       } else {
         M5.Display.println("Mode: Demo (local only)");
       }
@@ -788,6 +878,7 @@ void loop() {
       M5.Display.println("Hold screen to open settings");
       drawSolenoid(0);
       drawCommIndicator();
+      batteryDirty = true; 
     }
     return;
   }
@@ -799,18 +890,6 @@ void loop() {
   // ※ ここは「I2C からの 1打鍵トリガ」のみ
   if (triggerPending) {
     triggerPending = false;
-
-    uint32_t nowMs   = millis();
-    uint32_t deltaMs = nowMs - lastFireMs;
-    lastFireMs       = nowMs;
-
-    if (deltaMs < FAST_THRESHOLD_MS) {
-      // 🔸 高速連打：音だけ FAST 2段クリック（描画なし）
-      startFastSolenoid();
-    } else {
-      // 🔸 通常打鍵：先行クリック＋ピストンアニメ＋2段目クリック
-      solenoidEffect();
-    }
   }
 
   // ボタン操作（デバッグ用 / Demoモードでも使用可）
