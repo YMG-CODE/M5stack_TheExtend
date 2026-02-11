@@ -4,6 +4,10 @@
 #include <BluetoothSerial.h>
 
 #define I2C_ADDRESS 0x20
+// ==== Solenoid Command (isolated zone) ====
+#define SOL_CMD_LIGHT   0x80
+#define SOL_CMD_STRONG  0x81
+#define SOL_HDR 0xA5
 
 // ==== Battery status ====
 uint8_t batteryPct   = 0;
@@ -15,9 +19,9 @@ static int  lastBatteryPct = -1;
 static bool lastBatteryChg = false;
 static bool batteryDirty   = true;  // 初回描画用
 
-
-
-
+// ==== 起動時セッティング禁止 ====
+uint32_t bootTimeMs = 0;
+const uint32_t CONFIG_ENABLE_DELAY_MS = 1500;
 Preferences prefs;
 BluetoothSerial SerialBT;
 
@@ -98,6 +102,7 @@ void loadConfig() {
   prefs.end();
 }
 
+
 // ======================================================
 // 金属クリック波形生成
 // ======================================================
@@ -166,6 +171,9 @@ inline void pulseVibrationFast() {
 // ソレノイド描画
 // ======================================================
 void drawSolenoid(int pos) {
+  
+  if (configMode) return;  // ★追加：設定中は描画しない
+  
   int baseX  = 60;
   int baseY  = 140;
   int width  = 200;
@@ -353,30 +361,25 @@ volatile uint8_t solenoidReqCount = 0;
 
 // ---- I2C trigger gate ----
 volatile bool     solenoidPending = false;
-volatile uint32_t lastI2CUs = 0;
+
+volatile uint32_t lastI2CFireMs = 0;
+const uint32_t I2C_MIN_INTERVAL_MS = 8;  // ← 調整可
 
 void onReceiveEvent(int numBytes) {
-  if (numBytes <= 0) return;
+    if (numBytes <= 0) return;
 
-  uint8_t cmd = Wire.read();
+    uint8_t cmd = Wire.read();
+    while (Wire.available()) Wire.read();
 
-  
-  // 余分なバイトが来ても詰まらないように捨てる
-  while (Wire.available()) (void)Wire.read();
+    if (cmd != 0x10) return;
 
-  lastCmd        = cmd;
-  lastReceiveUs  = micros();
-  activeSource   = SRC_I2C;
+    uint32_t now = millis();
+    if (now - lastI2CFireMs < I2C_MIN_INTERVAL_MS) return;
 
-  if (cmd != 0x10) return;   // ★ Light solenoid 以外は無視
-    if (solenoidReqCount < 10) solenoidReqCount++; // キュー（上限付き）
-  uint32_t nowMs   = millis();
-  uint32_t deltaMs = nowMs - lastFireMs;
-  lastFireMs       = nowMs;
-  activeSource = SRC_I2C;
-  solenoidRequest = true;
-  solenoidRequestTime = millis();  // ISR でも OK（読むだけ）
+    lastI2CFireMs = now;
+    solenoidRequest = true;
 }
+
 
 // ======================================================
 // 設定UI
@@ -415,6 +418,35 @@ void drawConfigUI() {
 
   // 上に通信インジケータも表示
   drawCommIndicator();
+}
+
+//メイン画面描画関数
+void drawMainScreen() {
+  M5.Display.fillScreen(BLACK);
+
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(ORANGE);
+  M5.Display.setCursor(0, 30);
+  M5.Display.println("Solenoid Emulator");
+
+  M5.Display.setTextColor(GREEN);
+
+  if (appMode == MODE_USB_BT) {
+    M5.Display.println("Mode: USB / Bluetooth");
+  } else if (appMode == MODE_I2C) {
+    M5.Display.println("Mode: I2C");
+  } else {
+    M5.Display.println("Mode: Demo (local only)");
+  }
+
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(WHITE);
+  M5.Display.println("Hold screen to open settings");
+
+  drawSolenoid(0);
+  drawCommIndicator();
+
+  batteryDirty = true;
 }
 
 // ======================================================
@@ -456,17 +488,7 @@ void handleConfigTouch() {
     if (t.y > 245 + offsetY) {
       configMode = false;
       saveConfig();
-      M5.Display.fillScreen(BLACK);
-      M5.Display.setTextSize(2);
-      M5.Display.setTextColor(ORANGE);
-      M5.Display.setCursor(0, 30);
-      M5.Display.println("Solenoid Emulator");
-      M5.Display.setTextSize(1);
-      M5.Display.setTextColor(WHITE);
-      M5.Display.println("Hold screen to open settings");
-      drawSolenoid(0);
-      drawCommIndicator();
-      batteryDirty = true;
+      drawMainScreen();
     }
   }
 
@@ -482,6 +504,7 @@ void handleConfigTouch() {
 // 設定モード切替（長押し）
 // ======================================================
 void checkTouchToConfig() {
+  if (millis() - bootTimeMs < CONFIG_ENABLE_DELAY_MS) return;
   if (M5.Touch.getCount() > 0) {
     auto t = M5.Touch.getDetail(0);
     if (!configMode && t.wasPressed()) {
@@ -503,41 +526,45 @@ void checkTouchToConfig() {
 //   - 0x10 / 0x11 → ソレノイド発火
 //   - 0x01 / 0x02 → 以降の LSB/MSB/Layer を読み捨て（ソレノイドは鳴らさない）
 // ======================================================
+static bool sol_wait_header = false;
+
 void handleSerialByte(uint8_t b, CommSource src) {
-  activeSource = src;  // インジケータ更新用
+  activeSource = src;
 
+  // ===== Solenoid 2-byte frame =====
+  if (!sol_wait_header) {
+    if (b == SOL_HDR) {
+      sol_wait_header = true;
+    }
+    return;
+  }
+
+  // header を受けた次の1byteだけ評価
+  sol_wait_header = false;
+
+  if (b == SOL_CMD_LIGHT || b == SOL_CMD_STRONG) {
+    fireSolenoidByTiming();
+    usb_state = 0;   // 他のステートを壊してOK
+    return;
+  }
+
+  // ===== ここから下は CPM / Layer 用 =====
   switch (usb_state) {
-    // ---- ヘッダ待ち ----
     case 0:
-      if (b == 0x01) {          // CPM パケット開始
-        usb_state = 1;
-      }
-      else if (b == 0x02) {     // Layer パケット開始
-        usb_state = 3;
-      }
-      // ★★★ Solenoid コマンド（1バイト完結）★★★
-      else if (b == 0x10 || b == 0x11) {
-      fireSolenoidByTiming();
-      }
-      // その他のバイトは無視
+      if (b == 0x01) usb_state = 1;   // CPM
+      else if (b == 0x02) usb_state = 3; // Layer
       break;
 
-    // ---- CPM LSB ----
     case 1:
-      // LSB を読み捨て
-      usb_state = 2;
+      usb_state = 2;  // LSB 捨て
       break;
 
-    // ---- CPM MSB ----
     case 2:
-      // MSB を読み捨て
-      usb_state = 0;
+      usb_state = 0;  // MSB 捨て
       break;
 
-    // ---- Layer 1バイト ----
     case 3:
-      // layer 値を読み捨て
-      usb_state = 0;
+      usb_state = 0;  // layer 捨て
       break;
 
     default:
@@ -545,6 +572,9 @@ void handleSerialByte(uint8_t b, CommSource src) {
       break;
   }
 }
+
+
+
 
 // ======================================================
 // USB / BT シリアル入力チェック
@@ -779,30 +809,8 @@ void setup() {
 
   M5.Speaker.setVolume(soundVolume);
   M5.Power.setVibration(0);
-
-  // メイン画面
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(ORANGE);
-  M5.Display.fillScreen(BLACK);
-  M5.Display.setCursor(0, 30);
-  M5.Display.println("Solenoid Emulator");
-  M5.Display.setTextColor(WHITE);
-
-  if (appMode == MODE_USB_BT) {
-    M5.Display.setTextColor(GREEN);
-    M5.Display.println("Mode: USB / Bluetooth");
-  } else if (appMode == MODE_I2C) {
-    M5.Display.setTextColor(GREEN);
-    M5.Display.println("Mode: I2C");
-  } else {
-    M5.Display.setTextColor(GREEN);
-    M5.Display.println("Mode: Demo (local only)");
-  }
-  M5.Display.setTextSize(1);
-   M5.Display.setTextColor(WHITE);
-  M5.Display.println("Hold screen to open settings");
-  drawSolenoid(0);
-  drawCommIndicator();
+  drawMainScreen();
+  bootTimeMs = millis();
 }
 
 // ======================================================
@@ -817,7 +825,6 @@ void loop() {
   drawBatteryIndicator();
   batteryDirty = false;   // ← ★ここで false に戻る
 }
-
 
   // ⭐ 毎フレーム ソレノイド ステートマシン更新
   updateSolenoid();
@@ -859,26 +866,8 @@ void loop() {
       saveConfig();
       vibEnabled = true;                 // ★ 強制ON
       M5.Power.setVibration(0);          // 念のため
+      drawMainScreen();
 
-      M5.Display.fillScreen(BLACK);
-      M5.Display.setTextSize(2);
-      M5.Display.setTextColor(ORANGE);
-      M5.Display.setCursor(0, 30);
-      M5.Display.println("Solenoid Emulator");
-      M5.Display.setTextColor(WHITE);
-
-      if (appMode == MODE_USB_BT) {
-        M5.Display.println("Mode: USB / Bluetooth");
-      } else if (appMode == MODE_I2C) {
-        M5.Display.println("Mode: I2C");
-      } else {
-        M5.Display.println("Mode: Demo (local only)");
-      }
-
-      M5.Display.println("Hold screen to open settings");
-      drawSolenoid(0);
-      drawCommIndicator();
-      batteryDirty = true; 
     }
     return;
   }
