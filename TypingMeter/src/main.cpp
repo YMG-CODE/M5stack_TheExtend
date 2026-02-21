@@ -1306,6 +1306,21 @@ void applyLayer(uint8_t layer) {
                    (appMode == MODE_DEMO) ? SRC_NONE : SRC_NONE;
 }
 
+// ==== Fuel表示用：現在の燃料％を返す ====
+// Pomodoro中 → タイマー燃料
+// それ以外 → バッテリー残量
+int getFuelPercent() {
+
+    if (pomoMode == POMO_SHORT ||
+        pomoMode == POMO_LONG  ||
+        pomoMode == POMO_BREAK) {
+
+        return fuelLevel;   // 既存ポモドーロ燃料
+    }
+
+    // ★ 通常時はバッテリー
+    return batteryPct;
+}
 
 // ==== 小型ガソリンメーター描画（右下E・左上F配置・針反転＋モード別数値ラベル） ====
 void drawFuelMeter(int level) {
@@ -1572,7 +1587,7 @@ void updatePomodoro() {
         pomoMode = (pomoCycle == 2) ? POMO_LONG : POMO_SHORT; // 前回と同じ長さ
         pomoStartTime = millis();
         fuelLevel = 100;
-        drawFuelMeter(fuelLevel);
+        drawFuelMeter(newLevel);
 
         // 「NEXT SESSION!」を一瞬表示
         M5.Display.setTextColor(TFT_ORANGE, BLACK);
@@ -1595,7 +1610,7 @@ void registerActivity() {
         screenSaverActive = false;
         M5.Display.fillScreen(BLACK);
         drawMeterBackground();
-        drawFuelMeter(fuelLevel);
+        drawFuelMeter(getFuelPercent());
     }
 }
 
@@ -2697,7 +2712,7 @@ void resetStats() {
     drawMeterBackground();   
     changeShift(SHIFT_M);
     drawShiftIndicator_light();
-    drawFuelMeter(fuelLevel);
+    drawFuelMeter(getFuelPercent());
   }
 }
 
@@ -2846,7 +2861,7 @@ void startupSweep() {
     // 背景とタイトル
     drawMeterBackground();
     fuelLevel = 0;
-    drawFuelMeter(fuelLevel);
+    drawFuelMeter(getFuelPercent());
     delay(500);
 
     // 警告アイコン描画
@@ -2886,7 +2901,7 @@ void startupSweep() {
     }
     // ガソリンメーターはF位置（100）で固定
     fuelLevel = 100;
-    drawFuelMeter(fuelLevel);  
+    drawFuelMeter(getFuelPercent());  
     M5.Display.endWrite();  
 
 // === READY点滅 ===
@@ -3141,14 +3156,14 @@ void setup() {
 
     // 1) 背景を最初に完全描画
     drawMeterBackground();
-    drawFuelMeter(fuelLevel);
+    drawFuelMeter(getFuelPercent());
 
     // 2) 背景が確定した後で StartupSweep の描画を行う
     startupSweep();
 
     // 3) startupSweep で汚れた背景を再度描画して復元
     drawMeterBackground();
-    drawFuelMeter(fuelLevel);
+    drawFuelMeter(getFuelPercent());
     drawShiftIndicator();
 }
 
@@ -3164,6 +3179,7 @@ void loop() {
 
     if (!screenSaverActive) {
         drawBatteryIndicator();
+        drawFuelMeter(getFuelPercent());
     }
     
     unsigned long now = millis();
@@ -3314,7 +3330,7 @@ static bool settingsHandled = false;
     drawMeterBackground();
     changeShift(SHIFT_M);
     drawShiftIndicator_light();
-    drawFuelMeter(fuelLevel); 
+    drawFuelMeter(getFuelPercent()); 
     }
 settingsHandled = false;
 }
@@ -3341,7 +3357,7 @@ if (M5.BtnB.pressedFor(2000)) {
             delay(800);
             M5.Display.fillRect(5, 20, 210, 30, BLACK);
             fuelLevel = 100;
-            drawFuelMeter(fuelLevel);
+            drawFuelMeter(getFuelPercent());
             return;  // ここで終了（他処理に進まない）
         }
 
@@ -3358,7 +3374,7 @@ if (M5.BtnB.pressedFor(2000)) {
         // === 開始共通処理 ===
         pomoStartTime = millis();
         fuelLevel = 100;
-        drawFuelMeter(fuelLevel);
+        drawFuelMeter(getFuelPercent());
 
         // 左上にモード名表示
         M5.Display.setTextColor(TFT_ORANGE, BLACK);
@@ -3385,7 +3401,7 @@ else if (M5.BtnB.wasReleased()) {
         drawMeterBackground();
         changeShift(SHIFT_M);
         drawShiftIndicator_light();
-        drawFuelMeter(fuelLevel);
+        drawFuelMeter(getFuelPercent());
     }
     longPressHandledB = false; // ← フラグをリセット
     
@@ -3416,7 +3432,7 @@ if (M5.BtnC.pressedFor(2000)) {
         }
         else if (displayMode == MODE_METER) {
             drawMeterBackground();
-            drawFuelMeter(fuelLevel);
+            drawFuelMeter(getFuelPercent());
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
         }
@@ -3485,7 +3501,7 @@ if (touchPressed && (touchX > 80 && touchX < 240 && touchY > 80 && touchY < 200)
             displayMode = MODE_METER;
             M5.Display.fillScreen(BLACK);
             drawMeterBackground();
-            drawFuelMeter(fuelLevel);
+            drawFuelMeter(getFuelPercent());
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
         }
@@ -3559,7 +3575,7 @@ if (screenSaverActive) {
 
         if (displayMode == MODE_METER) {
             drawMeterBackground();
-            drawFuelMeter(fuelLevel);
+            drawFuelMeter(getFuelPercent());
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
         }
