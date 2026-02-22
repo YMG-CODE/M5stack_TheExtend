@@ -1,3 +1,4 @@
+
 #include <M5Unified.h>
 #define M5_Lcd M5.Display  // Legacy alias for M5Core2 compatibility
 #include <Wire.h>
@@ -141,7 +142,6 @@ int cpmLogIndex = 0;
 int cpmLogCount = 0;
 
 
-
 // ==== 起動時刻（LOG用）====
 unsigned long bootTimeMs = 0;
 
@@ -155,6 +155,8 @@ enum DisplayMode { MODE_METER, MODE_LOG, MODE_PCSTAT };
 
 DisplayMode displayMode = MODE_METER;
 DisplayMode prevDisplayMode = MODE_METER;
+
+bool hudMirror = false;//ヘッドアップディスプレイ用ミラーモード
 
 // ==== ユーティリティ ====
 inline int valueToAngle(int value) {
@@ -1309,6 +1311,8 @@ void applyLayer(uint8_t layer) {
 // ==== Fuel表示用：現在の燃料％を返す ====
 // Pomodoro中 → タイマー燃料
 // それ以外 → バッテリー残量
+#define FUEL_RED_THRESHOLD 25   // 25%未満でレッドゾーン
+
 int getFuelPercent() {
 
     if (pomoMode == POMO_SHORT ||
@@ -1383,7 +1387,65 @@ for (int i = 0; i <= tickCount; i++) {
     M5.Display.setTextColor(meterColor, BLACK);
     M5.Display.setCursor(eX - 7, eY +16);
     M5.Display.print("F");
+
 }
+
+static int  lastFuelLevel = -1;
+static bool lastRedState  = false;
+
+void updateFuelMeter() {
+
+    int level = getFuelPercent();
+    // 🔌 充電中は警告を出さない
+    bool red  = (level <= FUEL_RED_THRESHOLD) && !batteryChg;
+
+    // ---- Fuelバー更新（差分のみ）----
+    if (level != lastFuelLevel) {
+        lastFuelLevel = level;
+        drawFuelMeter(level);
+    }
+
+    // ---- アイコン更新（状態変化時のみ）----
+    if (red != lastRedState) {
+
+        const int iconX = CENTER_X - 140;  // 左側（Fuelメーター位置）
+        const int iconY = CENTER_Y -45;   // メーター上部
+
+        // 消去
+        M5.Display.fillRect(iconX - 2, iconY - 2, 24, 26, BLACK);
+
+        if (red) {
+            drawFuelIcon(iconX, iconY, TFT_ORANGE); // ⛽アイコン
+        }
+
+        lastRedState = red;
+    }
+}
+
+void updateRed() {
+
+    int level = getFuelPercent();
+    // 🔌 充電中は警告を出さない
+    bool red  = (level <= FUEL_RED_THRESHOLD) && !batteryChg;
+
+    // ---- アイコン更新（状態変化時のみ）----
+    if (red) {
+
+        const int iconX = CENTER_X - 140;  // 左側（Fuelメーター位置）
+        const int iconY = CENTER_Y -45;   // メーター上部
+
+        // 消去
+        M5.Display.fillRect(iconX - 2, iconY - 2, 24, 26, BLACK);
+
+
+            drawFuelIcon(iconX, iconY, TFT_ORANGE); // ⛽アイコン
+
+        lastRedState = red;
+    }
+}
+
+
+
 
 // ==== 残り時間表示（燃料計の上にオーバーレイ） ====
 void drawFuelTimeOverlay(unsigned long remainingMs, bool isDemo) {
@@ -2713,6 +2775,7 @@ void resetStats() {
     changeShift(SHIFT_M);
     drawShiftIndicator_light();
     drawFuelMeter(getFuelPercent());
+    updateRed();
   }
 }
 
@@ -2874,7 +2937,7 @@ void startupSweep() {
     drawNeedle(0, 0);
     delay(500);
     // スピードメーター: 左端→右端
-    // ガソリンメーター: F→E
+    // ガソリンメーター: E→F
     for (int v = 0; v <= 1000; v += 100) {
         if (v == 100) pulseVibration(100, 400);
         drawNeedle(v, (v == 0 ? 0 : v - 100));
@@ -2901,7 +2964,7 @@ void startupSweep() {
     }
     // ガソリンメーターはF位置（100）で固定
     fuelLevel = 100;
-    drawFuelMeter(getFuelPercent());  
+    drawFuelMeter(fuelLevel);  
     M5.Display.endWrite();  
 
 // === READY点滅 ===
@@ -2928,6 +2991,36 @@ void startupSweep() {
     M5.Display.endWrite();
 }
 
+//Hud用ミラー表示のトグル
+void drawHudToggle() {
+
+  int screenW = 320;
+  int x = screenW - 130;   // 右端から10px余白
+  int y = 10;
+  int w = 120;
+  int h = 28;
+  int knobR = 10;
+
+  // 背景クリア（前回描画消し）
+  M5.Display.fillRect(x - 2, y - 2, w + 60, h + 4, BLACK);
+
+  // トラック
+  uint16_t trackColor = hudMirror ? GREEN : DARKGREY;
+  M5.Display.fillRoundRect(x, y, w, h, h / 2, trackColor);
+
+  // ノブ位置
+  int knobX = hudMirror ? (x + w - h/2) : (x + h/2);
+  int knobY = y + h/2;
+
+  M5.Display.fillCircle(knobX, knobY, knobR, WHITE);
+
+  // ラベル
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(WHITE, BLACK);
+  M5.Display.setCursor(x - 45, y + 6);
+  M5.Display.print("HUD");
+}
+
 // ==== 起動時モード選択 ====
 // A: USB/BT, B: I2C, C: DEMO
 void selectAppMode() {
@@ -2948,6 +3041,7 @@ void selectAppMode() {
     M5.Display.setTextSize(1);
     M5.Display.setCursor(40, 200);
     M5.Display.println("Press a button to continue");
+    drawHudToggle();
 
     // ★ タイムアウトなし
     while (true) {
@@ -2966,6 +3060,21 @@ void selectAppMode() {
             break;
         }
         delay(10);
+
+        // ---- HUD トグルタップ判定 ----
+        if (M5.Touch.getCount() > 0) {
+        auto t = M5.Touch.getDetail(0);
+
+            if (t.wasPressed()) {
+
+             if (t.x >= 190 && t.x <= 310 &&
+                t.y >= 10  && t.y <= 38) {
+
+                hudMirror = !hudMirror;
+                drawHudToggle();
+                }
+            }
+        }
     }
 
     // モード確定表示（必要なら）
@@ -2980,6 +3089,7 @@ void selectAppMode() {
 
     delay(400);  // ← 完全になくしてもOK
 }
+
 
 
 //バッテリー描画消去関数
@@ -3095,8 +3205,20 @@ void setup() {
 
     M5.Power.setLed(false);   // 消灯
 
-    M5.begin();
+    //M5.begin();
+
+    auto cfg = M5.config();
+    M5.begin(cfg);
+
+    if (hudMirror) {
+        M5.Display.setRotation(7);   // ミラー
+        } else {
+        M5.Display.setRotation(1);   // 通常
+        }
+
     M5.Power.setLed(0);  // Disable LED at startup for unified
+    //画面輝度最大
+    M5.Lcd.setBrightness(255);
 
     Serial.begin(115200);
     delay(200);
@@ -3149,7 +3271,11 @@ void setup() {
     meterColor = METER_COLORS[colorIndex];
 
     M5.Display.clearDisplay(TFT_BLACK);
-    M5.Display.setRotation(1);  
+    if (hudMirror) {
+        M5.Display.setRotation(7);   // ミラー
+        } else {
+        M5.Display.setRotation(1);   // 通常
+        }
 
     //起動時からの経過時間（グラフ描画用）
     bootTimeMs = millis();
@@ -3165,6 +3291,7 @@ void setup() {
     drawMeterBackground();
     drawFuelMeter(getFuelPercent());
     drawShiftIndicator();
+  
 }
 
 // ==== メインループ ====
@@ -3179,7 +3306,6 @@ void loop() {
 
     if (!screenSaverActive) {
         drawBatteryIndicator();
-        drawFuelMeter(getFuelPercent());
     }
     
     unsigned long now = millis();
@@ -3331,6 +3457,7 @@ static bool settingsHandled = false;
     changeShift(SHIFT_M);
     drawShiftIndicator_light();
     drawFuelMeter(getFuelPercent()); 
+    updateRed();
     }
 settingsHandled = false;
 }
@@ -3358,6 +3485,7 @@ if (M5.BtnB.pressedFor(2000)) {
             M5.Display.fillRect(5, 20, 210, 30, BLACK);
             fuelLevel = 100;
             drawFuelMeter(getFuelPercent());
+            updateRed();
             return;  // ここで終了（他処理に進まない）
         }
 
@@ -3375,6 +3503,7 @@ if (M5.BtnB.pressedFor(2000)) {
         pomoStartTime = millis();
         fuelLevel = 100;
         drawFuelMeter(getFuelPercent());
+        updateRed();
 
         // 左上にモード名表示
         M5.Display.setTextColor(TFT_ORANGE, BLACK);
@@ -3402,6 +3531,7 @@ else if (M5.BtnB.wasReleased()) {
         changeShift(SHIFT_M);
         drawShiftIndicator_light();
         drawFuelMeter(getFuelPercent());
+        updateRed();
     }
     longPressHandledB = false; // ← フラグをリセット
     
@@ -3433,6 +3563,7 @@ if (M5.BtnC.pressedFor(2000)) {
         else if (displayMode == MODE_METER) {
             drawMeterBackground();
             drawFuelMeter(getFuelPercent());
+            updateRed();
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
         }
@@ -3502,6 +3633,7 @@ if (touchPressed && (touchX > 80 && touchX < 240 && touchY > 80 && touchY < 200)
             M5.Display.fillScreen(BLACK);
             drawMeterBackground();
             drawFuelMeter(getFuelPercent());
+            updateRed();
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
         }
@@ -3576,6 +3708,7 @@ if (screenSaverActive) {
         if (displayMode == MODE_METER) {
             drawMeterBackground();
             drawFuelMeter(getFuelPercent());
+            updateRed();
             changeShift(SHIFT_M);
             drawShiftIndicator_light();
         }
@@ -3629,5 +3762,9 @@ else if (displayedValue > targetValue)
             if (isReplaying) {
             drawReplayFrameAnimated(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT);
         }
+    }
+// ==== FuelMeter_Batteryの描画 ====
+    if (!screenSaverActive && displayMode == MODE_METER) {
+        updateFuelMeter();
     }
 }
