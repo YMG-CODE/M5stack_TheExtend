@@ -339,21 +339,24 @@ class SerialSender:
 
 
 
-    def is_connected(self) -> bool:
-        if self.ser is None:
-            return False
-
-        # USB / BT 共通：open状態ならOK
-        return self.ser.is_open
-
+    def disconnect(self):
+        with self.lock:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+            self.ser = None
 
     def is_connected(self) -> bool:
         if self.ser is None:
             return False
 
-        # Bluetooth は open 状態だけで OK
+    # Bluetooth は open 状態だけで OK
         if self.is_bluetooth:
-            return self.ser.is_open
+            return True
+
+        if not self.ser.is_open:
+            return False
+
+
 
         # USB は「例外を起こさず write できるか」で判定
         try:
@@ -375,7 +378,8 @@ class SerialSender:
                 pass
             except serial.SerialException:
                 # ポートが突然消えたなど
-                self.ser = None
+                if not self.is_bluetooth:
+                    self.ser = None
 
     # ---- プロトコル送信 ----
     def send_cpm(self, cpm: int):
@@ -408,6 +412,10 @@ class SerialSender:
         if not self.is_connected():
             return
         self._write(bytes([0xA5, 0x81]))   # Strong
+    def send_enter(self):
+        if not self.is_connected():
+            return
+        self._write(bytes([0xA5, 0x0D]))   # Enter / Missile
     
     def get_link_type(self) -> str:
         if not self.is_connected():
@@ -821,6 +829,7 @@ class TypingMeterApp:
         self._autoconnect_label_base = ""
         self.root.geometry("450x550")
         self._pressed_keys = set()
+        self._auto_reconnect_enabled = True
 
         self.pcstats = PCStatsCollector()
 
@@ -1042,6 +1051,8 @@ class TypingMeterApp:
         self.frm.rowconfigure(7, weight=0)  # PC Status
 
     def on_autoconnect(self):
+        
+        self._auto_reconnect_enabled = True
         link = self.link_mode.get()
         self.log(f"AutoConnect ({link})")
 
@@ -1197,7 +1208,7 @@ class TypingMeterApp:
     # -----------------------------
     def on_connect(self):
         if self.btn_connect.cget("text") == "Disconnect":
-            self.sender.disconnect()
+            self._auto_reconnect_enabled = False
             self.lbl_status.config(text="Disconnected")
             self.link_var.set("Link: -")
             self.btn_connect.config(text="Connect")
@@ -1309,14 +1320,21 @@ class TypingMeterApp:
 
 
     def _auto_reconnect_check(self):
-        if self._autoconnect_running:
+        
+        if not self._auto_reconnect_enabled:
             return
         
-        # ★ すでに接続中なら何もしない（USBも含む）
-        if self.sender.is_connected():
+        if self._autoconnect_running:
             return
 
         if not self._has_connected_once:
+            return
+
+        if self.sender.ser is not None:
+            return
+
+            # すでに接続中なら何もしない
+        if self.sender.is_connected():
             return
 
         link = self.link_mode.get()
@@ -1417,6 +1435,16 @@ class TypingMeterApp:
                         strong_keys = {"enter", "space", "backspace", "delete", "tab"}
                         if key in strong_keys:
                             self.sender.solenoid_strong()
+                        else:
+                            self.sender.solenoid_light()
+
+                        if key == "enter":
+                            # ★ ミサイル発射
+                            self.sender.send_enter()
+
+                        elif key in {"space", "backspace", "delete", "tab"}:
+                            self.sender.solenoid_strong()
+
                         else:
                             self.sender.solenoid_light()
 
