@@ -1,8 +1,13 @@
-TheExtendは、M5StackCore2（ESP32）と自作キーボード(QMKFirmware/RP2040Zero)及びPCを接続して使用する拡張基板及び自作のアプリケーション群です。<br>
-# TheExtend<br>
-<img width="930" height="526" alt="TheExtend" src="https://github.com/user-attachments/assets/bad5d9ba-cbc2-4483-b99f-740de1381e60" />
+# TheEndシリーズとは<br>
 
-**<基本構成>**<br>
+YMGWorksが設計した自作キーボードです。<br>
+カラムスタッガード配列・60キーを前後を基本構成とした左右分割設計の基板を素体とし、<br>
+拡張基板による複数デバイスの搭載/一部併用（トラックボール、トラックパッド、ロータリーエンコーダー、[AZ1UBALL](https://booth.pm/ja/items/4202085)他）、<br>
+[M5StackCore2](https://docs.m5stack.com/ja/core/core2)搭載による、アプリケーション機能の追加、専用の一体型パームレストの搭載など、拡張性に富んでいる点が最大の特徴です。<br>
+
+
+
+**<ビルドガイド一覧>**<br>
 - **[Structure_1]**:自作キーボード[TheEndpoint](https://booth.pm/ja/items/5397024?srsltid=AfmBOopyI2rIjd3S4u9huHNX6b24YG9W6Mf1bb4Djlk5SMYoJj527o7B)(QMKFirmware・マイコン/RP2040)とと拡張基板TheExtendを介し、M5Core2とI2C通信で接続<br>
 - **[Structure_2]**:USBシリアル/Bluetooth及びRawHIDを使用し直接PCと接続し、M5Core2をスタンドアロンで活用<br>
 
