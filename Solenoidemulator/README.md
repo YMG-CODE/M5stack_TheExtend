@@ -1,13 +1,10 @@
 # Solenoidemulatorについて<br>
 ![image](https://github.com/user-attachments/assets/8018f87d-b2ac-48f1-a927-4ad5df04f99b)
 
-
-
-
 Solenoidemulaterは、PCと接続されたキーボードのタイピングに合わせてソレノイドを模倣した音色、バイブレーションによる感覚的なフィードバックを発生させるアプリケーションです。<br>
 
 **<主な機能>**
-- **Solenoidの稼働アニメーション**<br>
+- **Solenoidの稼働アニメーション(solenoid描画とコクピットUI2種のアニメーションが切り替え可能)**<br>
 - **音量、音程、バイブレーション強度のカスタマイズ**<br>
 
 **<基本構成>**
