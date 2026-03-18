@@ -1,5 +1,6 @@
 # Solenoidemulatorについて<br>
-<img width="1280" height="670" alt="image" src="https://github.com/user-attachments/assets/06a9aac7-6331-4f61-9088-c659603a23d9" />
+![image](https://github.com/user-attachments/assets/8018f87d-b2ac-48f1-a927-4ad5df04f99b)
+
 
 
 
