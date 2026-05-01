@@ -50,6 +50,9 @@ from tkinter.scrolledtext import ScrolledText
 import psutil
 import platform
 
+import pyautogui
+import pydirectinput
+
 
 # ---------------------------------------------------------
 # シリアル (Core2 通信用)
@@ -917,6 +920,71 @@ class TypingMeterApp:
         # 終了ハンドラ
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
     
+    # -----------------------------
+    # マウスレポート受信 部分
+    # -----------------------------
+   
+    def mouse_receiver_loop(self):
+        rx_buf = bytearray()
+
+        while True:
+            ser = self.sender.ser
+
+            if not ser or not ser.is_open:
+                time.sleep(0.01)
+                continue
+
+            try:
+                n = ser.in_waiting
+
+                if n > 0:
+                    rx_buf += ser.read(n)
+
+                # -------------------------
+                # CLICK文字列検出
+                # -------------------------
+                while b"CLICK\n" in rx_buf:
+                    pos = rx_buf.find(b"CLICK\n")
+
+                    # クリック実行
+                    pydirectinput.click(button="left")
+
+                    # 消す
+                    del rx_buf[pos:pos+6]
+
+                # -------------------------
+                # 既存マウス移動パケット
+                # 0x30 dx dy
+                # -------------------------
+                while len(rx_buf) >= 3:
+
+                    if rx_buf[0] != 0x30:
+                        del rx_buf[0]
+                        continue
+
+                    dx = int.from_bytes(
+                        bytes([rx_buf[1]]),
+                        "little",
+                        signed=True
+                    )
+
+                    dy = int.from_bytes(
+                        bytes([rx_buf[2]]),
+                        "little",
+                        signed=True
+                    )
+
+                    pydirectinput.moveRel(dx, dy, relative=True)
+
+                    del rx_buf[:3]
+
+                pydirectinput.PAUSE = 0
+                pydirectinput.FAILSAFE = False
+
+            except Exception:
+                pass
+
+            time.sleep(0.001)
 
     # -----------------------------
     # UI 部分
@@ -1274,6 +1342,12 @@ class TypingMeterApp:
 
         # ★ 成功した場合のみ保存
         save_last_port(link, port)
+
+        # マウス起動
+        threading.Thread(
+            target=self.mouse_receiver_loop,
+            daemon=True
+        ).start()
 
         self.last_ports = load_last_ports()
 
